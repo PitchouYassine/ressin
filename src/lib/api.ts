@@ -30,8 +30,30 @@ export interface LocalAssetManifestItem {
   necessaryForCloudSync: boolean;
 }
 
+export const API_BASE_URL = (
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_APP_URL) ||
+  ''
+).replace(/\/+$/, '');
+
+export function resolveApiUrl(path: string): string {
+  if (!path) return '';
+  if (
+    path.startsWith('http://') ||
+    path.startsWith('https://') ||
+    path.startsWith('blob:') ||
+    path.startsWith('data:')
+  ) {
+    return path;
+  }
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return API_BASE_URL ? `${API_BASE_URL}${cleanPath}` : cleanPath;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const fullUrl = resolveApiUrl(url);
+  const res = await fetch(fullUrl, init);
   const raw = await res.text();
   let data: Record<string, unknown> | null = null;
   if (raw) {
@@ -42,7 +64,16 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!res.ok) {
-    const errMsg = typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`;
+    let errMsg = typeof data?.error === 'string' ? data.error : '';
+    if (!errMsg) {
+      if (res.status === 405) {
+        errMsg = `Request failed (405 Method Not Allowed): Cloudflare Pages only serves static files and rejected the ${
+          init?.method || 'POST'
+        } request. Set BACKEND_URL in Cloudflare Pages or VITE_API_BASE_URL to your Express backend.`;
+      } else {
+        errMsg = `Request failed (${res.status})`;
+      }
+    }
     throw new Error(errMsg);
   }
   if (!data) {
@@ -540,6 +571,15 @@ export const api = {
   getJob: (jobId: string) => request<{ job: RenderJob }>(`/api/jobs/${jobId}`),
 
   listAllJobs: () => request<{ jobs: RenderJob[] }>('/api/jobs'),
+
+  uploadVideoDirect: (projectId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<{ project: Project; metadata: VideoMetadata }>(`/api/projects/${projectId}/video`, {
+      method: 'POST',
+      body: fd,
+    });
+  },
 };
 
 export async function uploadVideoChunked(params: {
@@ -569,14 +609,20 @@ export async function uploadVideoChunked(params: {
     const slice = file.slice(start, end);
     const buffer = await slice.arrayBuffer();
 
-    const chunkRes = await fetch(`/api/uploads/${initRes.uploadId}/chunk?index=${i}`, {
+    const chunkUrl = resolveApiUrl(`/api/uploads/${initRes.uploadId}/chunk?index=${i}`);
+    const chunkRes = await fetch(chunkUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: buffer,
     });
     if (!chunkRes.ok) {
       const errData = await chunkRes.json().catch(() => ({}));
-      throw new Error(errData.error || `Chunk ${i + 1} upload failed`);
+      if (chunkRes.status === 405) {
+        throw new Error(
+          `Chunk ${i + 1} upload failed (405 Method Not Allowed): Cloudflare Pages does not support POST requests on static routes. Please set BACKEND_URL in Cloudflare Pages or VITE_API_BASE_URL to point to your Node.js Express server.`
+        );
+      }
+      throw new Error(errData.error || `Chunk ${i + 1} upload failed (${chunkRes.status})`);
     }
 
     const pct = Math.round(5 + ((i + 1) / totalChunks) * 80);

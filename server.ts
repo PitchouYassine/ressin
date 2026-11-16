@@ -58,6 +58,7 @@ import {
   getMaxUploadBytes,
   initChunkedUpload,
   saveCanvasBackgroundFile,
+  saveDirectVideoFile,
   saveFontFile,
   saveLogoFile,
   saveMusicFile,
@@ -119,6 +120,28 @@ import {
 
 const PORT = 3000;
 const app = express();
+
+// Enable CORS for cross-origin frontend hosting (e.g. Cloudflare Pages *.pages.dev)
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range'
+  );
+  res.header(
+    'Access-Control-Expose-Headers',
+    'Content-Length, Content-Range, Accept-Ranges, Content-Disposition'
+  );
+  res.header('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '30mb' }));
@@ -841,6 +864,89 @@ app.post('/api/uploads/:uploadId/complete', async (req, res) => {
       res.status(404).json({ error: 'Project not found' });
       return;
     }
+
+    res.json({ project: updated, metadata });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Direct Video Upload (Single-request multipart upload with Multer)
+app.post('/api/projects/:id/video', uploadMem.single('file'), async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    const project = getProject(projectId);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'No video file provided.' });
+      return;
+    }
+    const uploaded = saveDirectVideoFile(projectId, req.file.originalname, req.file.buffer);
+    const metadata = await analyzeVideoFile(uploaded.filePath);
+    const thumbnailUrl = await generateVideoThumbnail(
+      uploaded.filePath,
+      projectId,
+      Math.min(2, Math.max(0.2, metadata.duration * 0.15))
+    );
+    const waveformPeaks = await extractWaveformPeaks(uploaded.filePath, metadata.hasAudio);
+
+    const updated = updateProject(projectId, {
+      sourceVideoUrl: uploaded.url,
+      sourceFilename: uploaded.filename,
+      thumbnailUrl,
+      metadata,
+      waveformPeaks,
+      exportSettings: {
+        ...project.exportSettings,
+        aspectRatio: project.exportSettings.aspectRatio || 'original',
+      },
+    });
+
+    res.json({ project: updated, metadata });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/upload', uploadMem.single('file'), async (req, res) => {
+  try {
+    const projectId = String(req.body?.projectId || req.query?.projectId || '');
+    if (!projectId) {
+      res.status(400).json({ error: 'Missing projectId.' });
+      return;
+    }
+    const project = getProject(projectId);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'No video file provided.' });
+      return;
+    }
+    const uploaded = saveDirectVideoFile(projectId, req.file.originalname, req.file.buffer);
+    const metadata = await analyzeVideoFile(uploaded.filePath);
+    const thumbnailUrl = await generateVideoThumbnail(
+      uploaded.filePath,
+      projectId,
+      Math.min(2, Math.max(0.2, metadata.duration * 0.15))
+    );
+    const waveformPeaks = await extractWaveformPeaks(uploaded.filePath, metadata.hasAudio);
+
+    const updated = updateProject(projectId, {
+      sourceVideoUrl: uploaded.url,
+      sourceFilename: uploaded.filename,
+      thumbnailUrl,
+      metadata,
+      waveformPeaks,
+      exportSettings: {
+        ...project.exportSettings,
+        aspectRatio: project.exportSettings.aspectRatio || 'original',
+      },
+    });
 
     res.json({ project: updated, metadata });
   } catch (err) {

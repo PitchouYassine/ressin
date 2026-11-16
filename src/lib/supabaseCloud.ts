@@ -4,6 +4,7 @@
  */
 
 import { Project, CloudAssetManifestEntry } from '../types/studio';
+import { resolveApiUrl } from './api';
 
 export function isSupabaseConfigured(): boolean {
   return false;
@@ -28,7 +29,7 @@ export async function resolvePlayableAssetUrl(
   _cloudAssets?: Record<string, CloudAssetManifestEntry>
 ): Promise<string | null> {
   if (!url) return null;
-  return url;
+  return resolveApiUrl(url);
 }
 
 export async function downloadProjectAsset(opts: {
@@ -37,8 +38,9 @@ export async function downloadProjectAsset(opts: {
   filename: string;
   cloudAssets?: Record<string, CloudAssetManifestEntry>;
 }): Promise<void> {
-  const targetUrl = opts.url || opts.localUrl;
-  if (!targetUrl) return;
+  const rawTarget = opts.url || opts.localUrl;
+  if (!rawTarget) return;
+  const targetUrl = resolveApiUrl(rawTarget);
   try {
     const res = await fetch(targetUrl);
     const blob = await res.blob();
