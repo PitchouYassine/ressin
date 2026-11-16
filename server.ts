@@ -35,7 +35,15 @@ import {
   saveSavedFishVoices,
   updatePreset,
   updateProject,
+  upsertProjectFromCloud,
 } from './server/db.ts';
+import {
+  CompressionPreset,
+  compressProjectVideoForFreeCloud,
+  computeLocalStorageUsage,
+  hydrateAssetToLocalBucket,
+  inspectProjectAssets,
+} from './server/services/local_storage_service.ts';
 import { isGeminiConfigured } from './server/services/gemini_client.ts';
 import {
   analyzeVideoFile,
@@ -50,6 +58,7 @@ import {
   getMaxUploadBytes,
   initChunkedUpload,
   saveCanvasBackgroundFile,
+  saveDirectVideoFile,
   saveFontFile,
   saveLogoFile,
   saveMusicFile,
@@ -112,12 +121,34 @@ import {
 const PORT = 3000;
 const app = express();
 
+// Enable CORS for cross-origin frontend hosting (e.g. Cloudflare Pages *.pages.dev)
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range'
+  );
+  res.header(
+    'Access-Control-Expose-Headers',
+    'Content-Length, Content-Range, Accept-Ranges, Content-Disposition'
+  );
+  res.header('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 app.use(express.json({ limit: '25mb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '30mb' }));
 
 const uploadMem = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 55 * 1024 * 1024 },
 });
 
 // Media streaming route with HTTP Range & HEAD support for video seeking and download disposition
@@ -240,6 +271,15 @@ app.get('/api/system/status', async (_req, res) => {
     supportedVideoFormats: ['MP4', 'MOV', 'MKV'],
     supportedLogoFormats: ['PNG', 'SVG'],
   });
+});
+
+
+app.get('/api/system/storage-usage', (_req, res) => {
+  try {
+    res.json(computeLocalStorageUsage());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // Fish Audio Voice Library & Authorized Cloned Voices
@@ -670,6 +710,59 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ deleted: true });
 });
 
+
+// Inspect Project Assets (SHA-256 + Size + Free 50 MB single-file cap check)
+app.get('/api/projects/:id/asset-manifest', (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    res.json(inspectProjectAssets(project));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// User-Requested Local FFmpeg Compression (ONLY when user clicks compress; preserves original file)
+app.post('/api/projects/:id/compress-video', async (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const rawPreset = String(req.body?.preset || 'under-45mb');
+    const preset: CompressionPreset =
+      rawPreset === '720p-compact' || rawPreset === '480p-compact'
+        ? rawPreset
+        : 'under-45mb';
+    const target = req.body?.target === 'final-export' ? 'final-export' : 'source';
+
+    const { project: _p, ...result } = await compressProjectVideoForFreeCloud({ project, preset, target });
+    const updated =
+      target === 'final-export'
+        ? updateProject(project.id, {
+            lastExportUrl: result.compressedUrl,
+            lastExportSize: result.compressedBytes,
+            lastExportedAt: new Date().toISOString(),
+          })
+        : updateProject(project.id, {
+            sourceVideoUrl: result.compressedUrl,
+            sourceFilename: result.filename,
+            metadata: result.metadata,
+          });
+    res.json({
+      project: updated,
+      ...result,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+
 // Generate a real FFmpeg-synthesized sample movie recap video for immediate pipeline testing
 app.post('/api/projects/:id/sample-video', async (req, res) => {
   try {
@@ -771,6 +864,89 @@ app.post('/api/uploads/:uploadId/complete', async (req, res) => {
       res.status(404).json({ error: 'Project not found' });
       return;
     }
+
+    res.json({ project: updated, metadata });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Direct Video Upload (Single-request multipart upload with Multer)
+app.post('/api/projects/:id/video', uploadMem.single('file'), async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    const project = getProject(projectId);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'No video file provided.' });
+      return;
+    }
+    const uploaded = saveDirectVideoFile(projectId, req.file.originalname, req.file.buffer);
+    const metadata = await analyzeVideoFile(uploaded.filePath);
+    const thumbnailUrl = await generateVideoThumbnail(
+      uploaded.filePath,
+      projectId,
+      Math.min(2, Math.max(0.2, metadata.duration * 0.15))
+    );
+    const waveformPeaks = await extractWaveformPeaks(uploaded.filePath, metadata.hasAudio);
+
+    const updated = updateProject(projectId, {
+      sourceVideoUrl: uploaded.url,
+      sourceFilename: uploaded.filename,
+      thumbnailUrl,
+      metadata,
+      waveformPeaks,
+      exportSettings: {
+        ...project.exportSettings,
+        aspectRatio: project.exportSettings.aspectRatio || 'original',
+      },
+    });
+
+    res.json({ project: updated, metadata });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/upload', uploadMem.single('file'), async (req, res) => {
+  try {
+    const projectId = String(req.body?.projectId || req.query?.projectId || '');
+    if (!projectId) {
+      res.status(400).json({ error: 'Missing projectId.' });
+      return;
+    }
+    const project = getProject(projectId);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'No video file provided.' });
+      return;
+    }
+    const uploaded = saveDirectVideoFile(projectId, req.file.originalname, req.file.buffer);
+    const metadata = await analyzeVideoFile(uploaded.filePath);
+    const thumbnailUrl = await generateVideoThumbnail(
+      uploaded.filePath,
+      projectId,
+      Math.min(2, Math.max(0.2, metadata.duration * 0.15))
+    );
+    const waveformPeaks = await extractWaveformPeaks(uploaded.filePath, metadata.hasAudio);
+
+    const updated = updateProject(projectId, {
+      sourceVideoUrl: uploaded.url,
+      sourceFilename: uploaded.filename,
+      thumbnailUrl,
+      metadata,
+      waveformPeaks,
+      exportSettings: {
+        ...project.exportSettings,
+        aspectRatio: project.exportSettings.aspectRatio || 'original',
+      },
+    });
 
     res.json({ project: updated, metadata });
   } catch (err) {
@@ -1626,6 +1802,55 @@ app.post('/api/projects/:id/thumbnails/generate', async (req, res) => {
       suggestedTitles,
       translationMissingWarning: translatedLines.length === 0,
     });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Save a rendered composite thumbnail (TikTok PNG/JPG) onto project storage so it syncs across devices
+app.post('/api/projects/:id/thumbnails/save', uploadMem.single('file'), (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'Thumbnail image file is required.' });
+      return;
+    }
+    const format = req.body?.format === 'jpg' ? 'jpg' : 'png';
+    const label = String(req.body?.label || 'TikTok Thumbnail').slice(0, 80);
+    const width = Number(req.body?.width) || 1080;
+    const height = Number(req.body?.height) || 1920;
+    const thumbId = uuidv4();
+    const safeFilename = `tiktok_thumb_${project.id.slice(0, 8)}_${thumbId.slice(0, 8)}.${format}`;
+    const thumbUrl = `/media/thumbs/${safeFilename}`;
+    const saved = hydrateAssetToLocalBucket({
+      projectId: project.id,
+      targetLocalUrl: thumbUrl,
+      bucket: 'thumbs',
+      filename: safeFilename,
+      assetKind: 'thumbnail',
+      mimeType: format === 'jpg' ? 'image/jpeg' : 'image/png',
+      buffer: req.file.buffer,
+    });
+
+    const newThumb = {
+      id: thumbId,
+      url: saved.localUrl,
+      label,
+      width,
+      height,
+      format: format as 'png' | 'jpg',
+      createdAt: new Date().toISOString(),
+    };
+    const nextSaved = [newThumb, ...(project.savedThumbnails || [])].slice(0, 20);
+    const updated = updateProject(project.id, {
+      savedThumbnails: nextSaved,
+      thumbnailUrl: req.body?.setAsCover === 'true' ? saved.localUrl : project.thumbnailUrl,
+    });
+    res.json({ thumbnail: newThumb, project: updated });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

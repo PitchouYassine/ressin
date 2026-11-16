@@ -1,6 +1,12 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  Archive,
   CheckCircle2,
   FolderCog,
   Loader2,
@@ -10,7 +16,11 @@ import {
 import { SystemStatus } from '../types/studio';
 import { api } from '../lib/api';
 
-export function SettingsPage() {
+interface SettingsPageProps {
+  onOpenBackupModal?: () => void;
+}
+
+export function SettingsPage({ onOpenBackupModal }: SettingsPageProps) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [cleaning, setCleaning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
@@ -39,8 +49,7 @@ export function SettingsPage() {
           Settings & System Integration
         </h1>
         <p className="text-sm text-zinc-400 mt-1">
-          Verify backend media processing engines, server-side AI provider configuration, and storage
-          policies.
+          Verify backend media processing engines, server-side AI provider configuration, and local SQLite storage.
         </p>
       </div>
 
@@ -83,22 +92,22 @@ export function SettingsPage() {
             <div className="py-3 flex items-center justify-between gap-4">
               <div>
                 <div className="font-medium text-zinc-100">
-                  Google Gemini AI (Translation & Alignment)
+                  Gemini Translation Workflow (Manual Mode Free · Optional API)
                 </div>
                 <div className="text-zinc-500 mt-0.5">
-                  Powered server-side via @google/genai (gemini-4-hydrogen)
+                  Manual External Gemini JSON workflow requires zero API key. Optional backend API available if GEMINI_API_KEY is set.
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0 font-medium">
                 {status.geminiConfigured ? (
                   <>
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="text-emerald-300">Configured</span>
+                    <span className="text-emerald-300">API Key + Manual Ready</span>
                   </>
                 ) : (
                   <>
-                    <AlertCircle className="w-4 h-4 text-amber-400" />
-                    <span className="text-amber-300">Missing GEMINI_API_KEY</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span className="text-emerald-300">Manual Free Mode Ready (No Key Needed)</span>
                   </>
                 )}
               </div>
@@ -197,6 +206,30 @@ export function SettingsPage() {
         </div>
 
         {cleanupMsg && <div className="text-xs text-emerald-400">{cleanupMsg}</div>}
+      </section>
+
+      {/* 100% Local SQLite & Portable Backup Studio */}
+      <section className="p-5 rounded-xl bg-[#111115] border border-white/[0.08] space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-display font-semibold text-white">
+              100% Local SQLite &amp; Portable Backups
+            </h2>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              All projects, media assets, and fonts are stored securely in local SQLite and server storage. No external databases required.
+            </p>
+          </div>
+          {onOpenBackupModal && (
+            <button
+              type="button"
+              onClick={onOpenBackupModal}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Archive className="w-3.5 h-3.5" />
+              Manage Local Storage &amp; Backup
+            </button>
+          )}
+        </div>
       </section>
 
       {/* Copyright & Authorized Editing Policy */}

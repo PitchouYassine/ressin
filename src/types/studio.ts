@@ -692,6 +692,132 @@ export interface ExportSettings {
   applyAudioMix: boolean;
 }
 
+export type CloudSyncStatus =
+  | 'local-only'
+  | 'cloud-synced'
+  | 'pending-sync'
+  | 'quota-blocked'
+  | 'conflict'
+  | 'offline';
+
+export type CloudAssetKind =
+  | 'video'
+  | 'final-export'
+  | 'voice'
+  | 'voice-segment'
+  | 'music'
+  | 'sfx'
+  | 'logo'
+  | 'background'
+  | 'font'
+  | 'thumbnail'
+  | 'mask'
+  | 'other';
+
+export interface CloudAssetManifestEntry {
+  localUrl: string;
+  bucketPath: string;
+  sha256: string;
+  sizeBytes: number;
+  assetKind: CloudAssetKind;
+  filename: string;
+  mimeType: string;
+  compressed?: boolean;
+  verified?: boolean;
+  verifiedSizeBytes?: number;
+  verifiedAt?: string;
+  syncedAt: string;
+}
+
+export interface CloudAssetRecord {
+  id: string;
+  userId: string;
+  projectId: string;
+  bucketPath: string;
+  assetKind: CloudAssetKind;
+  filename: string;
+  mimeType: string;
+  sha256: string;
+  sizeBytes: number;
+  originalLocalUrl: string;
+  compressed: boolean;
+  verified?: boolean;
+  verifiedAt?: string;
+  createdAt: string;
+}
+
+export type CloudUploadTaskStatus =
+  | 'queued'
+  | 'uploading'
+  | 'verifying'
+  | 'verified'
+  | 'deduplicated'
+  | 'failed'
+  | 'cancelled'
+  | 'quota-blocked'
+  | 'exceeds-free-cap';
+
+export interface CloudUploadTask {
+  id: string;
+  localUrl: string;
+  filename: string;
+  assetKind: CloudAssetKind;
+  sizeBytes: number;
+  uploadedBytes: number;
+  progressPct: number;
+  status: CloudUploadTaskStatus;
+  sha256?: string;
+  bucketPath?: string;
+  error?: string;
+}
+
+export interface SavedProjectThumbnail {
+  id: string;
+  url: string;
+  label: string;
+  width: number;
+  height: number;
+  format: 'png' | 'jpg';
+  createdAt: string;
+}
+
+export interface ProjectCloudMeta {
+  syncStatus: CloudSyncStatus;
+  cloudUpdatedAt?: string;
+  syncVersion?: number;
+  lastDeviceId?: string;
+  skippedLargeAssets?: Array<{ filename: string; sizeBytes: number; reason: string }>;
+  failedUploads?: Array<{ localUrl: string; filename: string; reason: string }>;
+  unverifiedCount?: number;
+  error?: string;
+}
+
+export interface CloudStorageUsage {
+  storageUsedBytes: number;
+  storageLimitBytes: number;
+  dbUsedBytes: number;
+  dbLimitBytes: number;
+  maxSingleFileBytes: number;
+  egressTrackedBytes: number;
+  egressLimitBytes: number;
+  fileCount: number;
+  projectCount: number;
+  assets: CloudAssetRecord[];
+}
+
+export interface PendingSyncOp {
+  projectId: string;
+  projectName: string;
+  queuedAt: string;
+  updatedAt: string;
+  reason: string;
+}
+
+export interface SupabaseFreeConfig {
+  url: string;
+  anonKey: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -700,6 +826,7 @@ export interface Project {
   sourceVideoUrl: string | null;
   sourceFilename: string | null;
   thumbnailUrl: string | null;
+  savedThumbnails?: SavedProjectThumbnail[];
   metadata: VideoMetadata | null;
   waveformPeaks: number[];
   captions: CaptionSegment[];
@@ -715,6 +842,8 @@ export interface Project {
   lastExportUrl: string | null;
   lastExportSize: number | null;
   lastExportedAt: string | null;
+  cloudSync?: ProjectCloudMeta;
+  cloudAssets?: Record<string, CloudAssetManifestEntry>;
 }
 
 export interface RenderJob {

@@ -68,6 +68,11 @@ try {
 } catch {
   // column already present
 }
+try {
+  db.exec("ALTER TABLE projects ADD COLUMN cloud_meta_json TEXT NOT NULL DEFAULT '{}'");
+} catch {
+  // column already present
+}
 
 interface ProjectRow {
   id: string;
@@ -86,6 +91,7 @@ interface ProjectRow {
   video_effects_json?: string;
   canvas_json?: string;
   workflow_json?: string;
+  cloud_meta_json?: string;
   export_settings_json: string;
   last_export_url: string | null;
   last_export_size: number | null;
@@ -131,12 +137,21 @@ function rowToProject(row: ProjectRow): Project {
     useTranslated: true,
   };
 
+  const parsedCloudMeta = row.cloud_meta_json
+    ? (JSON.parse(row.cloud_meta_json) as {
+        cloudSync?: Project['cloudSync'];
+        cloudAssets?: Project['cloudAssets'];
+        savedThumbnails?: Project['savedThumbnails'];
+      })
+    : {};
+
   return {
     id: row.id,
     name: row.name,
     sourceVideoUrl: row.source_video_url,
     sourceFilename: row.source_filename,
     thumbnailUrl: row.thumbnail_url,
+    savedThumbnails: parsedCloudMeta.savedThumbnails || [],
     metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
     waveformPeaks: JSON.parse(row.waveform_json || '[]'),
     captions: JSON.parse(row.captions_json || '[]'),
@@ -159,6 +174,8 @@ function rowToProject(row: ProjectRow): Project {
     lastExportUrl: row.last_export_url,
     lastExportSize: row.last_export_size,
     lastExportedAt: row.last_exported_at,
+    cloudSync: parsedCloudMeta.cloudSync,
+    cloudAssets: parsedCloudMeta.cloudAssets,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -243,6 +260,7 @@ export function updateProject(id: string, patch: Partial<Project>): Project | nu
       video_effects_json = ?,
       canvas_json = ?,
       workflow_json = ?,
+      cloud_meta_json = ?,
       export_settings_json = ?,
       last_export_url = ?,
       last_export_size = ?,
@@ -271,6 +289,11 @@ export function updateProject(id: string, patch: Partial<Project>): Project | nu
         needsAttentionStages: [],
       }
     ),
+    JSON.stringify({
+      cloudSync: merged.cloudSync,
+      cloudAssets: merged.cloudAssets,
+      savedThumbnails: merged.savedThumbnails || [],
+    }),
     JSON.stringify(merged.exportSettings),
     merged.lastExportUrl,
     merged.lastExportSize,
@@ -279,6 +302,67 @@ export function updateProject(id: string, patch: Partial<Project>): Project | nu
     id
   );
   return getProject(id);
+}
+
+export function upsertProjectFromCloud(cloudProject: Project): Project {
+  const existing = getProject(cloudProject.id);
+  const now = new Date().toISOString();
+  const safeWorkflow =
+    cloudProject.workflow && Array.isArray(cloudProject.workflow.visitedStages)
+      ? cloudProject.workflow
+      : {
+          visitedStages: ['dashboard'],
+          completedStages: [],
+          needsAttentionStages: [],
+        };
+
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO projects (
+        id, name, source_video_url, source_filename, thumbnail_url, metadata_json,
+        waveform_json, captions_json, subtitle_style_json, translation_json, voice_json,
+        blurs_json, logos_json, video_effects_json, canvas_json, workflow_json,
+        cloud_meta_json, export_settings_json, last_export_url, last_export_size,
+        last_exported_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      cloudProject.id,
+      cloudProject.name || 'Cloud Project',
+      cloudProject.sourceVideoUrl ?? null,
+      cloudProject.sourceFilename ?? null,
+      cloudProject.thumbnailUrl ?? null,
+      cloudProject.metadata ? JSON.stringify(cloudProject.metadata) : null,
+      JSON.stringify(cloudProject.waveformPeaks || []),
+      JSON.stringify(cloudProject.captions || []),
+      JSON.stringify({ ...DEFAULT_SUBTITLE_STYLE, ...(cloudProject.subtitleStyle || {}), useTranslated: true }),
+      JSON.stringify(cloudProject.translation || { sourceLanguage: 'Auto', targetLanguage: 'Spanish', preserveProperNouns: true }),
+      JSON.stringify({ ...DEFAULT_VOICE_CONFIG, ...(cloudProject.voice || {}) }),
+      JSON.stringify(cloudProject.blurs || []),
+      JSON.stringify(cloudProject.logos || []),
+      JSON.stringify({ ...DEFAULT_VIDEO_EFFECTS, ...(cloudProject.videoEffects || {}) }),
+      JSON.stringify({ ...DEFAULT_VIDEO_CANVAS, ...(cloudProject.canvas || {}) }),
+      JSON.stringify(safeWorkflow),
+      JSON.stringify({
+        cloudSync: cloudProject.cloudSync || { syncStatus: 'cloud-synced' },
+        cloudAssets: cloudProject.cloudAssets || {},
+        savedThumbnails: cloudProject.savedThumbnails || [],
+      }),
+      JSON.stringify({ ...DEFAULT_EXPORT_SETTINGS, ...(cloudProject.exportSettings || {}) }),
+      cloudProject.lastExportUrl ?? null,
+      cloudProject.lastExportSize ?? null,
+      cloudProject.lastExportedAt ?? null,
+      cloudProject.createdAt || now,
+      cloudProject.updatedAt || now
+    );
+    return getProject(cloudProject.id)!;
+  }
+
+  return updateProject(cloudProject.id, {
+    ...cloudProject,
+    cloudSync: cloudProject.cloudSync || { syncStatus: 'cloud-synced' },
+    cloudAssets: cloudProject.cloudAssets || existing.cloudAssets,
+    savedThumbnails: cloudProject.savedThumbnails || existing.savedThumbnails,
+  })!;
 }
 
 export function deleteProject(id: string): boolean {
@@ -407,6 +491,30 @@ export function getAssetByUrl(url: string): { file_path: string; filename: strin
     | { file_path: string; filename: string; mime_type: string }
     | undefined;
   return row ?? null;
+}
+
+export function listAssetsByProject(projectId: string): Array<{
+  id: string;
+  kind: string;
+  filename: string;
+  file_path: string;
+  url: string;
+  mime_type: string;
+  size_bytes: number;
+}> {
+  return db
+    .prepare(
+      'SELECT id, kind, filename, file_path, url, mime_type, size_bytes FROM assets WHERE project_id = ? ORDER BY created_at DESC'
+    )
+    .all(projectId) as Array<{
+    id: string;
+    kind: string;
+    filename: string;
+    file_path: string;
+    url: string;
+    mime_type: string;
+    size_bytes: number;
+  }>;
 }
 
 export function getAppSetting(key: string, fallback: string): string {
