@@ -317,34 +317,6 @@ export function saveFontFile(
   return { filePath, filename: safeName, url, family };
 }
 
-export function saveDirectVideoFile(
-  projectId: string,
-  originalName: string,
-  buffer: Buffer
-): { filePath: string; filename: string; url: string; sizeBytes: number } {
-  validateVideoUpload(originalName, buffer.length);
-  const ext = path.extname(originalName).toLowerCase();
-  const safeBase = sanitizeFilename(path.basename(originalName, ext));
-  const finalFilename = `${projectId.slice(0, 8)}_${Date.now()}_${safeBase}${ext}`;
-  const filePath = path.join(UPLOADS_DIR, finalFilename);
-  fs.writeFileSync(filePath, buffer);
-
-  const url = `/media/uploads/${finalFilename}`;
-  registerAsset({
-    id: uuidv4(),
-    projectId,
-    kind: 'video',
-    filename: sanitizeFilename(originalName),
-    filePath,
-    url,
-    mimeType: ext === '.mov' ? 'video/quicktime' : ext === '.mkv' ? 'video/x-matroska' : 'video/mp4',
-    sizeBytes: buffer.length,
-  });
-
-  return { filePath, filename: sanitizeFilename(originalName), url, sizeBytes: buffer.length };
-}
-
 export function sanitizeFilename(name: string): string {
   return path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
 }
-

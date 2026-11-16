@@ -1,6 +1,5 @@
 import {
   CaptionSegment,
-  CloudAssetKind,
   FishVoiceModel,
   GeminiVoiceName,
   PresetCategory,
@@ -13,47 +12,11 @@ import {
   SupportedLanguage,
   SyncMode,
   SystemStatus,
-  VideoMetadata,
 } from '../types/studio';
 import type { FontCatalogItem } from './fontCatalog';
 
-export interface LocalAssetManifestItem {
-  localUrl: string;
-  bucket: string;
-  filename: string;
-  assetKind: CloudAssetKind;
-  mimeType: string;
-  sizeBytes: number;
-  sha256: string;
-  exists: boolean;
-  exceedsFree50MbCap: boolean;
-  necessaryForCloudSync: boolean;
-}
-
-export const API_BASE_URL = (
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) ||
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ||
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_APP_URL) ||
-  ''
-).replace(/\/+$/, '');
-
-export function resolveApiUrl(path: string): string {
-  if (!path) return '';
-  if (
-    path.startsWith('http://') ||
-    path.startsWith('https://') ||
-    path.startsWith('blob:') ||
-    path.startsWith('data:')
-  ) {
-    return path;
-  }
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return API_BASE_URL ? `${API_BASE_URL}${cleanPath}` : cleanPath;
-}
-
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const fullUrl = resolveApiUrl(url);
-  const res = await fetch(fullUrl, init);
+  const res = await fetch(url, init);
   const raw = await res.text();
   let data: Record<string, unknown> | null = null;
   if (raw) {
@@ -64,16 +27,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!res.ok) {
-    let errMsg = typeof data?.error === 'string' ? data.error : '';
-    if (!errMsg) {
-      if (res.status === 405) {
-        errMsg = `Request failed (405 Method Not Allowed): Cloudflare Pages only serves static files and rejected the ${
-          init?.method || 'POST'
-        } request. Set BACKEND_URL in Cloudflare Pages or VITE_API_BASE_URL to your Express backend.`;
-      } else {
-        errMsg = `Request failed (${res.status})`;
-      }
-    }
+    const errMsg = typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`;
     throw new Error(errMsg);
   }
   if (!data) {
@@ -97,112 +51,7 @@ export interface PresetWarning {
 export const api = {
   getSystemStatus: () => request<SystemStatus>('/api/system/status'),
 
-  getSupabaseSchema: () => request<{ sql: string }>('/api/system/supabase-schema'),
-
-  getLocalStorageUsage: () =>
-    request<{
-      totalBytes: number;
-      buckets: Record<string, { bytes: number; files: number }>;
-    }>('/api/system/storage-usage'),
-
   runCleanup: () => request<{ removedFiles: number }>('/api/system/cleanup', { method: 'POST' }),
-
-  getProjectAssetManifest: (projectId: string) =>
-    request<{
-      assets: LocalAssetManifestItem[];
-      totalBytes: number;
-      necessaryBytes: number;
-      oversizedCount: number;
-    }>(`/api/projects/${projectId}/asset-manifest`),
-
-  compressProjectVideo: (
-    projectId: string,
-    preset: 'under-45mb' | '720p-compact' | '480p-compact',
-    target: 'source' | 'final-export' = 'source'
-  ) =>
-    request<{
-      project: Project;
-      compressedUrl: string;
-      filename: string;
-      originalSourceUrl: string;
-      originalBytes: number;
-      compressedBytes: number;
-      metadata: VideoMetadata;
-      target: 'source' | 'final-export';
-    }>(`/api/projects/${projectId}/compress-video`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preset, target }),
-    }),
-
-  saveProjectThumbnail: async (
-    projectId: string,
-    params: {
-      blob: Blob;
-      label: string;
-      width: number;
-      height: number;
-      format: 'png' | 'jpg';
-      setAsCover?: boolean;
-    }
-  ) => {
-    const fd = new FormData();
-    fd.append('file', params.blob, `thumb.${params.format}`);
-    fd.append('label', params.label);
-    fd.append('width', String(params.width));
-    fd.append('height', String(params.height));
-    fd.append('format', params.format);
-    fd.append('setAsCover', params.setAsCover ? 'true' : 'false');
-    return request<{
-      thumbnail: {
-        id: string;
-        url: string;
-        label: string;
-        width: number;
-        height: number;
-        format: 'png' | 'jpg';
-        createdAt: string;
-      };
-      project: Project;
-    }>(`/api/projects/${projectId}/thumbnails/save`, {
-      method: 'POST',
-      body: fd,
-    });
-  },
-
-  upsertProjectFromCloud: (project: Project) =>
-    request<{ project: Project }>('/api/projects/upsert-from-cloud', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project }),
-    }),
-
-  hydrateAssetFromBlob: async (
-    projectId: string,
-    params: {
-      blob: Blob;
-      bucket: string;
-      filename: string;
-      assetKind: CloudAssetKind;
-      mimeType: string;
-      targetLocalUrl?: string;
-    }
-  ) => {
-    const fd = new FormData();
-    fd.append('file', params.blob, params.filename);
-    fd.append('bucket', params.bucket);
-    fd.append('filename', params.filename);
-    fd.append('assetKind', params.assetKind);
-    fd.append('mimeType', params.mimeType);
-    if (params.targetLocalUrl) fd.append('targetLocalUrl', params.targetLocalUrl);
-    return request<{ localUrl: string; filePath: string; sizeBytes: number }>(
-      `/api/projects/${projectId}/hydrate-asset`,
-      {
-        method: 'POST',
-        body: fd,
-      }
-    );
-  },
 
   listFishVoices: (params?: { query?: string; selfOnly?: boolean; language?: string }) => {
     const qs = new URLSearchParams();
@@ -571,15 +420,6 @@ export const api = {
   getJob: (jobId: string) => request<{ job: RenderJob }>(`/api/jobs/${jobId}`),
 
   listAllJobs: () => request<{ jobs: RenderJob[] }>('/api/jobs'),
-
-  uploadVideoDirect: (projectId: string, file: File) => {
-    const fd = new FormData();
-    fd.append('file', file);
-    return request<{ project: Project; metadata: VideoMetadata }>(`/api/projects/${projectId}/video`, {
-      method: 'POST',
-      body: fd,
-    });
-  },
 };
 
 export async function uploadVideoChunked(params: {
@@ -609,20 +449,14 @@ export async function uploadVideoChunked(params: {
     const slice = file.slice(start, end);
     const buffer = await slice.arrayBuffer();
 
-    const chunkUrl = resolveApiUrl(`/api/uploads/${initRes.uploadId}/chunk?index=${i}`);
-    const chunkRes = await fetch(chunkUrl, {
+    const chunkRes = await fetch(`/api/uploads/${initRes.uploadId}/chunk?index=${i}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: buffer,
     });
     if (!chunkRes.ok) {
       const errData = await chunkRes.json().catch(() => ({}));
-      if (chunkRes.status === 405) {
-        throw new Error(
-          `Chunk ${i + 1} upload failed (405 Method Not Allowed): Cloudflare Pages does not support POST requests on static routes. Please set BACKEND_URL in Cloudflare Pages or VITE_API_BASE_URL to point to your Node.js Express server.`
-        );
-      }
-      throw new Error(errData.error || `Chunk ${i + 1} upload failed (${chunkRes.status})`);
+      throw new Error(errData.error || `Chunk ${i + 1} upload failed`);
     }
 
     const pct = Math.round(5 + ((i + 1) / totalChunks) * 80);
