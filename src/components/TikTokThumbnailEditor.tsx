@@ -6,11 +6,13 @@ import {
   Cloud,
   Download,
   Eye,
+  Film,
   Loader2,
   RotateCcw,
   Shield,
   Sparkles,
   Type,
+  Upload,
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { Project, SavedFontAsset } from '../types/studio';
@@ -527,6 +529,7 @@ export function TikTokThumbnailEditor({
   onProjectUpdated,
 }: TikTokThumbnailEditorProps) {
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const bgUploadInputRef = useRef<HTMLInputElement>(null);
 
   const [sizeId, setSizeId] = useState<string>('1080x1920'); // Default TikTok 9:16
   const [downloadFormat, setDownloadFormat] = useState<'png' | 'jpg'>('png');
@@ -1016,6 +1019,49 @@ export function TikTokThumbnailEditor({
 
               {/* Creative Design & Typography Controls */}
               <div className="lg:col-span-7 space-y-3.5 text-xs">
+                {/* Change Background Screen / Image */}
+                <div className="p-3 rounded-xl bg-zinc-900/80 border border-white/[0.08] space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-white flex items-center gap-1.5">
+                      <Film className="w-3.5 h-3.5 text-violet-400" />
+                      Background Screen / Frame (Change Screen)
+                    </span>
+                    <input
+                      ref={bgUploadInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const blobUrl = URL.createObjectURL(file);
+                        updateActiveDesign({ imageUrl: blobUrl });
+                        e.target.value = '';
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => bgUploadInputRef.current?.click()}
+                      className="px-2.5 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+                    >
+                      <Upload className="w-3 h-3" />
+                      Upload Custom Screen
+                    </button>
+                  </div>
+                  {project.thumbnailUrl && (
+                    <div className="flex items-center gap-2 pt-1 text-[11px] text-zinc-400">
+                      <span>Quick source:</span>
+                      <button
+                        type="button"
+                        onClick={() => updateActiveDesign({ imageUrl: project.thumbnailUrl! })}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 cursor-pointer"
+                      >
+                        Use Project Thumbnail
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 {/* 5 Design Styles Switcher */}
                 <div className="space-y-1.5">
                   <span className="text-[11px] text-zinc-400 font-medium">Creative Design Style</span>
