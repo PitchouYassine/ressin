@@ -43,7 +43,7 @@ import {
   computeLocalStorageUsage,
   hydrateAssetToLocalBucket,
   inspectProjectAssets,
-} from './server/services/cloud_helper_service.ts';
+} from './server/services/local_storage_service.ts';
 import { isGeminiConfigured } from './server/services/gemini_client.ts';
 import {
   analyzeVideoFile,
@@ -250,16 +250,6 @@ app.get('/api/system/status', async (_req, res) => {
   });
 });
 
-// Zero-Cost Supabase Free SQL Schema & Local Storage Accounting
-app.get('/api/system/supabase-schema', (_req, res) => {
-  try {
-    const sqlPath = path.resolve('./db/supabase_free_schema.sql');
-    const sql = fs.existsSync(sqlPath) ? fs.readFileSync(sqlPath, 'utf-8') : '';
-    res.json({ sql });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
 
 app.get('/api/system/storage-usage', (_req, res) => {
   try {
@@ -697,20 +687,6 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ deleted: true });
 });
 
-// Upsert Project pulled from Supabase Free PostgreSQL
-app.post('/api/projects/upsert-from-cloud', (req, res) => {
-  try {
-    const projectData = req.body?.project as Project | undefined;
-    if (!projectData || !projectData.id) {
-      res.status(400).json({ error: 'Invalid cloud project payload.' });
-      return;
-    }
-    const saved = upsertProjectFromCloud(projectData);
-    res.json({ project: saved });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
 
 // Inspect Project Assets (SHA-256 + Size + Free 50 MB single-file cap check)
 app.get('/api/projects/:id/asset-manifest', (req, res) => {
@@ -741,7 +717,7 @@ app.post('/api/projects/:id/compress-video', async (req, res) => {
         : 'under-45mb';
     const target = req.body?.target === 'final-export' ? 'final-export' : 'source';
 
-    const result = await compressProjectVideoForFreeCloud({ project, preset, target });
+    const { project: _p, ...result } = await compressProjectVideoForFreeCloud({ project, preset, target });
     const updated =
       target === 'final-export'
         ? updateProject(project.id, {
@@ -763,34 +739,6 @@ app.post('/api/projects/:id/compress-video', async (req, res) => {
   }
 });
 
-// Hydrate downloaded Supabase Storage asset into local bucket for FFmpeg & Studio preview on Device B
-app.post('/api/projects/:id/hydrate-asset', uploadMem.single('file'), (req, res) => {
-  try {
-    if (!req.file) {
-      res.status(400).json({ error: 'No asset file payload uploaded.' });
-      return;
-    }
-    const bucket = String(req.body?.bucket || 'uploads');
-    const filename = String(req.body?.filename || req.file.originalname || 'asset.bin');
-    const assetKind = String(req.body?.assetKind || 'video') as import('./src/types/studio.ts').CloudAssetKind;
-    const targetLocalUrl =
-      typeof req.body?.targetLocalUrl === 'string' ? req.body.targetLocalUrl : undefined;
-    const mimeType = String(req.body?.mimeType || req.file.mimetype || 'application/octet-stream');
-
-    const saved = hydrateAssetToLocalBucket({
-      projectId: req.params.id,
-      targetLocalUrl,
-      bucket,
-      filename,
-      assetKind,
-      mimeType,
-      buffer: req.file.buffer,
-    });
-    res.json(saved);
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
 
 // Generate a real FFmpeg-synthesized sample movie recap video for immediate pipeline testing
 app.post('/api/projects/:id/sample-video', async (req, res) => {

@@ -1,8 +1,13 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  Archive,
   CheckCircle2,
-  Cloud,
   FolderCog,
   Loader2,
   ShieldAlert,
@@ -10,14 +15,12 @@ import {
 } from 'lucide-react';
 import { SystemStatus } from '../types/studio';
 import { api } from '../lib/api';
-import { ZERO_COST_CAPABILITY_MATRIX } from '../lib/supabaseFreeLimits';
 
 interface SettingsPageProps {
-  onOpenCloudModal?: () => void;
-  cloudUserEmail?: string | null;
+  onOpenBackupModal?: () => void;
 }
 
-export function SettingsPage({ onOpenCloudModal, cloudUserEmail }: SettingsPageProps) {
+export function SettingsPage({ onOpenBackupModal }: SettingsPageProps) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [cleaning, setCleaning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
@@ -46,8 +49,7 @@ export function SettingsPage({ onOpenCloudModal, cloudUserEmail }: SettingsPageP
           Settings & System Integration
         </h1>
         <p className="text-sm text-zinc-400 mt-1">
-          Verify backend media processing engines, server-side AI provider configuration, and storage
-          policies.
+          Verify backend media processing engines, server-side AI provider configuration, and local SQLite storage.
         </p>
       </div>
 
@@ -206,58 +208,27 @@ export function SettingsPage({ onOpenCloudModal, cloudUserEmail }: SettingsPageP
         {cleanupMsg && <div className="text-xs text-emerald-400">{cleanupMsg}</div>}
       </section>
 
-      {/* Zero-Cost Supabase Free Cloud Sync & Free-Tier Breakdown */}
+      {/* 100% Local SQLite & Portable Backup Studio */}
       <section className="p-5 rounded-xl bg-[#111115] border border-white/[0.08] space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-display font-semibold text-white">
-              Zero-Cost Multi-Device Sync (Supabase Free Plan)
+              100% Local SQLite &amp; Portable Backups
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              {cloudUserEmail
-                ? `Connected as ${cloudUserEmail} · 1 GB Free Storage · 500 MB Free PostgreSQL`
-                : 'Connect your own free Supabase project (no credit card required) or edit offline in IndexedDB.'}
+              All projects, media assets, and fonts are stored securely in local SQLite and server storage. No external databases required.
             </p>
           </div>
-          {onOpenCloudModal && (
+          {onOpenBackupModal && (
             <button
               type="button"
-              onClick={onOpenCloudModal}
-              className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={onOpenBackupModal}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Cloud className="w-3.5 h-3.5" />
-              Manage Cloud Sync &amp; Quota
+              <Archive className="w-3.5 h-3.5" />
+              Manage Local Storage &amp; Backup
             </button>
           )}
-        </div>
-
-        <div className="rounded-lg bg-[#09090B] border border-white/[0.08] overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-white/[0.08] text-zinc-500">
-              <tr>
-                <th className="py-2 px-3 font-medium">Capability</th>
-                <th className="py-2 px-3 font-medium">Cost Tier</th>
-                <th className="py-2 px-3 font-medium">Known Limit / Note</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.06]">
-              {ZERO_COST_CAPABILITY_MATRIX.map((row) => (
-                <tr key={row.feature}>
-                  <td className="py-2 px-3 text-zinc-200">{row.feature}</td>
-                  <td className="py-2 px-3 whitespace-nowrap">
-                    {row.tier === 'free-local' ? (
-                      <span className="text-emerald-300">Free (Local)</span>
-                    ) : row.tier === 'free-cloud' ? (
-                      <span className="text-violet-300">Free (Supabase)</span>
-                    ) : (
-                      <span className="text-amber-300">Optional Paid Key</span>
-                    )}
-                  </td>
-                  <td className="py-2 px-3 text-zinc-400">{row.limitation}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </section>
 

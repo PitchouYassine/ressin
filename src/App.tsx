@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   Cloud,
   CloudOff,
   Download,
@@ -29,6 +30,7 @@ import {
 } from './types/studio';
 import { api, PresetWarning } from './lib/api';
 import { indexedDbStore } from './lib/indexedDbStore';
+import { LocalBackupModal } from './components/LocalBackupModal';
 import {
   getCloudSession,
   getSupabaseClient,
@@ -36,7 +38,6 @@ import {
   queueDebouncedMetadataSync,
   subscribeToCloudProjectsRealtime,
 } from './lib/supabaseCloud';
-import { CloudSyncModal } from './components/CloudSyncModal';
 import {
   WORKFLOW_STAGES,
   computeStageStatuses,
@@ -973,39 +974,10 @@ export default function App() {
               type="button"
               onClick={() => setCloudModalOpen(true)}
               className="px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.1] text-xs font-medium text-zinc-200 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-              title="Supabase Free Cloud Sync & Storage Optimizer"
+              title="Local Storage, Cache & Portable Project Backup (.recapbackup.zip)"
             >
-              {!isOnline ? (
-                <>
-                  <WifiOff className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Offline ({pendingOps.length})</span>
-                </>
-              ) : activeProject?.cloudSync?.syncStatus === 'quota-blocked' ? (
-                <>
-                  <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                  <span>Quota Full</span>
-                </>
-              ) : pendingOps.length > 0 ? (
-                <>
-                  <Cloud className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Pending ({pendingOps.length})</span>
-                </>
-              ) : cloudUserId && activeProject?.cloudSync?.syncStatus === 'cloud-synced' ? (
-                <>
-                  <Cloud className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Cloud Synced</span>
-                </>
-              ) : cloudUserId ? (
-                <>
-                  <Cloud className="w-3.5 h-3.5 text-violet-400" />
-                  <span>Cloud Sync</span>
-                </>
-              ) : (
-                <>
-                  <CloudOff className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Local Only</span>
-                </>
-              )}
+              <Archive className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Local Storage &amp; Backup</span>
             </button>
 
             {activeProject && activePage !== 'export' && (
@@ -1083,8 +1055,7 @@ export default function App() {
             />
           ) : activePage === 'settings' ? (
             <SettingsPage
-              onOpenCloudModal={() => setCloudModalOpen(true)}
-              cloudUserEmail={cloudUserEmail}
+              onOpenBackupModal={() => setCloudModalOpen(true)}
             />
           ) : !activeProject ? (
             <div className="p-10 text-center space-y-3">
@@ -1218,18 +1189,12 @@ export default function App() {
         </main>
       </div>
 
-      <CloudSyncModal
+      <LocalBackupModal
         open={cloudModalOpen}
         onClose={() => setCloudModalOpen(false)}
         activeProject={activeProject}
-        projects={projects}
-        cloudUserId={cloudUserId}
-        cloudUserEmail={cloudUserEmail}
-        isOnline={isOnline}
-        pendingOps={pendingOps}
         onProjectUpdated={handleProjectUpdated}
         onRefreshProjects={loadWorkspaceData}
-        onAuthChanged={refreshCloudAuth}
       />
     </div>
   );

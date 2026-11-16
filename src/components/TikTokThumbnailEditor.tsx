@@ -1318,7 +1318,7 @@ export function TikTokThumbnailEditor({
                     type="button"
                     onClick={() =>
                       void downloadProjectAsset({
-                        localUrl: st.url,
+                        url: st.url,
                         cloudAssets: project.cloudAssets,
                         filename: `${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_thumb_${st.id.slice(
                           0,

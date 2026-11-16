@@ -715,7 +715,7 @@ export function ExportCenterPage({
                       setDownloadingTarget('original');
                       setErrorMsg(null);
                       void downloadProjectAsset({
-                        localUrl: project.sourceVideoUrl,
+                        url: project.sourceVideoUrl,
                         cloudAssets: project.cloudAssets,
                         filename:
                           project.sourceFilename ||
@@ -746,7 +746,7 @@ export function ExportCenterPage({
                       setDownloadingTarget('final');
                       setErrorMsg(null);
                       void downloadProjectAsset({
-                        localUrl: project.lastExportUrl,
+                        url: project.lastExportUrl,
                         cloudAssets: project.cloudAssets,
                         filename: `${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_final.mp4`,
                       })

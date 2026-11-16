@@ -487,9 +487,9 @@ export function VideoStudioPlayer({
     });
     void Promise.all([
       resolvePlayableAssetUrl(project.sourceVideoUrl, project.cloudAssets),
-      resolvePlayableAssetUrl(project.voice.fullDubUrl, project.cloudAssets),
-      resolvePlayableAssetUrl(project.voice.bgMusicUrl, project.cloudAssets),
-      resolvePlayableAssetUrl(project.voice.sfxUrl, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.fullDubUrl || null, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.bgMusicUrl || null, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.sfxUrl || null, project.cloudAssets),
     ]).then(([video, dub, music, sfx]) => {
       if (!active) return;
       setResolvedUrls({

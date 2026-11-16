@@ -601,44 +601,10 @@ export function DashboardPage({
                           onOpenCloudModal?.();
                         }}
                         className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
-                        title="Cloud synchronization status"
+                        title="Manage local storage and portable project backup"
                       >
-                        {pendingSyncProjectIds?.has(p.id) ||
-                        p.cloudSync?.syncStatus === 'pending-sync' ||
-                        p.cloudSync?.syncStatus === 'offline' ? (
-                          <>
-                            <Clock className="w-3 h-3 text-amber-400" />
-                            <span className="text-amber-300">
-                              {p.cloudSync?.unverifiedCount
-                                ? `Pending Upload (${p.cloudSync.unverifiedCount} unverified)`
-                                : 'Unsynced Local Queue'}
-                            </span>
-                          </>
-                        ) : p.cloudSync?.syncStatus === 'quota-blocked' ? (
-                          <>
-                            <AlertTriangle className="w-3 h-3 text-red-400" />
-                            <span className="text-red-300">Quota Full · Local Only</span>
-                          </>
-                        ) : p.cloudSync?.syncStatus === 'conflict' ? (
-                          <>
-                            <AlertTriangle className="w-3 h-3 text-amber-400" />
-                            <span className="text-amber-300">Sync Conflict</span>
-                          </>
-                        ) : p.cloudSync?.syncStatus === 'cloud-synced' ? (
-                          <>
-                            <Cloud className="w-3 h-3 text-emerald-400" />
-                            <span className="text-emerald-300">
-                              {p.cloudSync.skippedLargeAssets?.length
-                                ? 'Cloud Synced · >50 MB Local'
-                                : 'Full Cloud Verified'}
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <CloudOff className="w-3 h-3 text-zinc-500" />
-                            <span className="text-zinc-500">Local Only</span>
-                          </>
-                        )}
+                        <Archive className="w-3 h-3 text-emerald-400" />
+                        <span className="text-emerald-300">100% Local SQLite</span>
                       </button>
                       <span className="text-violet-400 font-medium flex items-center gap-1 group-hover:text-violet-300">
                         <FolderOpen className="w-3.5 h-3.5" />
