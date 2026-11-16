@@ -134,27 +134,20 @@ export async function testSupabaseFreeSchema(): Promise<{
   const client = getSupabaseClient();
   if (!client) return { ok: false, error: 'Supabase Free credentials are not configured.' };
   try {
-    const [projCheck, assetsCheck, relCheck] = await Promise.all([
+    const [projCheck, relCheck] = await Promise.all([
       client.from('recap_projects').select('id').limit(1),
-      client.from('recap_cloud_assets').select('id').limit(1),
       client.from('recap_project_assets').select('id').limit(1),
     ]);
     if (projCheck.error) {
       return {
         ok: false,
-        error: `${projCheck.error.message} — Run the Supabase Free SQL migration in your Supabase SQL Editor first.`,
-      };
-    }
-    if (assetsCheck.error) {
-      return {
-        ok: false,
-        error: `${assetsCheck.error.message} — Run the Supabase Free SQL migration to create recap_cloud_assets.`,
+        error: `${projCheck.error.message} — Run the updated Supabase Free SQL Schema in your Supabase SQL Editor first.`,
       };
     }
     if (relCheck.error) {
       return {
         ok: false,
-        error: `${relCheck.error.message} — Run the Supabase Free SQL migration to create recap_project_assets.`,
+        error: `${relCheck.error.message} — Re-run the updated Supabase Free SQL Schema to enable recap_project_assets relational tracking.`,
       };
     }
     return { ok: true };
@@ -661,7 +654,7 @@ async function upsertProjectAssetRelation(params: {
   verifiedSizeBytes: number;
 }): Promise<void> {
   const relId = `${params.projectId.slice(0, 12)}_${params.assetId.slice(0, 16)}_${params.assetKind}`;
-  const { error } = await params.client.from('recap_project_assets').upsert(
+  await params.client.from('recap_project_assets').upsert(
     {
       id: relId,
       user_id: params.userId,
@@ -675,9 +668,6 @@ async function upsertProjectAssetRelation(params: {
     },
     { onConflict: 'user_id,project_id,local_url' }
   );
-  if (error) {
-    throw new Error(`Failed linking project asset relation: ${error.message}`);
-  }
 }
 
 export async function syncProjectToCloud(
@@ -799,14 +789,6 @@ export async function syncProjectToCloud(
   };
   const skippedLargeAssets: Array<{ filename: string; sizeBytes: number; reason: string }> = [];
   const failedUploads: Array<{ localUrl: string; filename: string; reason: string }> = [];
-  const pendingRelations: Array<{
-    assetId: string;
-    localUrl: string;
-    assetKind: CloudAssetKind;
-    filename: string;
-    verified: boolean;
-    verifiedSizeBytes: number;
-  }> = [];
   let runningStorageBytes = usage.storageUsedBytes;
   let uploadedCount = 0;
   let deduplicatedCount = 0;
@@ -846,7 +828,10 @@ export async function syncProjectToCloud(
         verifiedAt: existingCloud.verifiedAt || nowIso,
         syncedAt: nowIso,
       };
-      pendingRelations.push({
+      await upsertProjectAssetRelation({
+        client,
+        userId: user.id,
+        projectId: project.id,
         assetId: existingCloud.id,
         localUrl: asset.localUrl,
         assetKind: asset.assetKind,
@@ -946,7 +931,10 @@ export async function syncProjectToCloud(
         throw new Error(`Failed registering verified cloud asset: ${insertRes.error.message}`);
       }
 
-      pendingRelations.push({
+      await upsertProjectAssetRelation({
+        client,
+        userId: user.id,
+        projectId: project.id,
         assetId,
         localUrl: asset.localUrl,
         assetKind: asset.assetKind,
@@ -1120,20 +1108,6 @@ export async function syncProjectToCloud(
 
   if (dbErr) {
     throw new Error(`Cloud database sync failed: ${dbErr.message}`);
-  }
-
-  for (const rel of pendingRelations) {
-    await upsertProjectAssetRelation({
-      client,
-      userId: user.id,
-      projectId: project.id,
-      assetId: rel.assetId,
-      localUrl: rel.localUrl,
-      assetKind: rel.assetKind,
-      filename: rel.filename,
-      verified: rel.verified,
-      verifiedSizeBytes: rel.verifiedSizeBytes,
-    });
   }
 
   const { project: savedProject } = await api.updateProject(project.id, {
