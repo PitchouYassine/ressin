@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Archive,
   Check,
+  Cloud,
   Download,
   Eye,
   Loader2,
@@ -14,6 +15,7 @@ import {
 import JSZip from 'jszip';
 import { Project, SavedFontAsset } from '../types/studio';
 import { api } from '../lib/api';
+import { downloadProjectAsset } from '../lib/supabaseCloud';
 import {
   BUILTIN_FONT_CATALOG,
   ensureFontLoaded,
@@ -516,11 +518,13 @@ async function drawThumbnailToCanvas(
 interface TikTokThumbnailEditorProps {
   project: Project;
   customFonts?: SavedFontAsset[];
+  onProjectUpdated?: (p: Project) => void;
 }
 
 export function TikTokThumbnailEditor({
   project,
   customFonts = [],
+  onProjectUpdated,
 }: TikTokThumbnailEditorProps) {
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -531,6 +535,8 @@ export function TikTokThumbnailEditor({
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
+  const [savingToProject, setSavingToProject] = useState(false);
+  const [savedThumbNotice, setSavedThumbNotice] = useState<string | null>(null);
   const [zipDownloading, setZipDownloading] = useState(false);
   const [sourceModeLabel, setSourceModeLabel] = useState<string | null>(null);
   const [translationMissingWarning, setTranslationMissingWarning] = useState(false);
@@ -688,6 +694,31 @@ export function TikTokThumbnailEditor({
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setZipDownloading(false);
+    }
+  };
+
+  const handleSaveSelectedToProject = async () => {
+    const target = designs[selectedIdx];
+    if (!target) return;
+    setErrorMsg(null);
+    setSavedThumbNotice(null);
+    setSavingToProject(true);
+    try {
+      const blob = await renderDesignBlob(target, downloadFormat);
+      const res = await api.saveProjectThumbnail(project.id, {
+        blob,
+        label: target.title || `Thumbnail #${selectedIdx + 1}`,
+        width: activeSize.width,
+        height: activeSize.height,
+        format: downloadFormat,
+        setAsCover: true,
+      });
+      onProjectUpdated?.(res.project);
+      setSavedThumbNotice(`Saved Thumbnail #${selectedIdx + 1} to project & cloud manifest.`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingToProject(false);
     }
   };
 
@@ -951,6 +982,19 @@ export function TikTokThumbnailEditor({
                   </button>
                   <button
                     type="button"
+                    onClick={() => void handleSaveSelectedToProject()}
+                    disabled={savingToProject}
+                    className="px-3 py-2 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {savingToProject ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Cloud className="w-3.5 h-3.5" />
+                    )}
+                    Save to Project
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => void handleDownloadAllZip()}
                     disabled={zipDownloading}
                     className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-xs font-semibold text-zinc-100 flex items-center gap-1.5 cursor-pointer"
@@ -960,9 +1004,14 @@ export function TikTokThumbnailEditor({
                     ) : (
                       <Archive className="w-3.5 h-3.5 text-violet-400" />
                     )}
-                    Download All 5 (.zip)
+                    ZIP (All 5)
                   </button>
                 </div>
+                {savedThumbNotice && (
+                  <div className="w-full text-[11px] text-emerald-300 text-center">
+                    {savedThumbNotice}
+                  </div>
+                )}
               </div>
 
               {/* Creative Design & Typography Controls */}
@@ -1237,8 +1286,57 @@ export function TikTokThumbnailEditor({
             Click &ldquo;Generate 5 Thumbnails&rdquo; to create 5 custom TikTok thumbnail designs
           </div>
           <p className="text-[11px] text-zinc-500">
-            Default output size: {activeSize.width}×{activeSize.height}px · PNG / JPG · Dedicated download per thumbnail
+            Default output size: {activeSize.width}×{activeSize.height}px · PNG / JPG · Save &amp; sync across devices
           </p>
+        </div>
+      )}
+
+      {(project.savedThumbnails?.length || 0) > 0 && (
+        <div className="pt-3 border-t border-white/[0.08] space-y-2.5">
+          <div className="text-xs font-semibold text-zinc-200 flex items-center justify-between">
+            <span>Saved Project Thumbnails (Synced Across Devices)</span>
+            <span className="text-[11px] font-mono text-zinc-500 tabular-nums">
+              {project.savedThumbnails!.length} saved
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {project.savedThumbnails!.map((st) => (
+              <div
+                key={st.id}
+                className="rounded-lg bg-[#18181D] border border-white/[0.08] overflow-hidden flex flex-col"
+              >
+                <div className="aspect-[9/16] max-h-32 bg-black overflow-hidden">
+                  <img
+                    src={st.url}
+                    alt={st.label}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div className="p-2 flex items-center justify-between gap-1.5 text-[11px]">
+                  <span className="truncate text-zinc-300">{st.label}</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void downloadProjectAsset({
+                        localUrl: st.url,
+                        cloudAssets: project.cloudAssets,
+                        filename: `${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_thumb_${st.id.slice(
+                          0,
+                          6
+                        )}.${st.format}`,
+                      }).catch((err) =>
+                        setErrorMsg(err instanceof Error ? err.message : String(err))
+                      )
+                    }
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                  >
+                    <Download className="w-3 h-3" />
+                    {st.format.toUpperCase()}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

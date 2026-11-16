@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Cloud,
   Download,
   Eye,
   Film,
@@ -12,7 +13,9 @@ import {
   Mic,
   Palette,
   RefreshCw,
+  RotateCcw,
   Type,
+  XCircle,
 } from 'lucide-react';
 import {
   DEFAULT_VIDEO_CANVAS,
@@ -23,6 +26,13 @@ import {
 } from '../types/studio';
 import { api } from '../lib/api';
 import { formatBytes, formatDurationShort } from '../lib/formatters';
+import {
+  downloadProjectAsset,
+  getCloudSession,
+  isSupabaseConfigured,
+  resolvePlayableAssetUrl,
+  uploadSingleProjectAssetToCloud,
+} from '../lib/supabaseCloud';
 import {
   countMissingTranslations,
   createWorkflowUpdate,
@@ -45,6 +55,7 @@ export function ExportCenterPage({
 }: ExportCenterPageProps) {
   const draftVideoRef = useRef<HTMLVideoElement | null>(null);
   const finalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cloudUploadAbortRef = useRef<AbortController | null>(null);
 
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [activeJob, setActiveJob] = useState<RenderJob | null>(null);
@@ -60,11 +71,20 @@ export function ExportCenterPage({
     'idle' | 'checking' | 'valid' | 'error'
   >('idle');
   const [exportValidationMsg, setExportValidationMsg] = useState<string | null>(null);
+  const [resolvedExportUrl, setResolvedExportUrl] = useState<string | null>(
+    project.lastExportUrl
+  );
   const [videoMetaInfo, setVideoMetaInfo] = useState<{
     w: number;
     h: number;
     dur: number;
   } | null>(null);
+
+  const [cloudUploading, setCloudUploading] = useState(false);
+  const [cloudUploadPct, setCloudUploadPct] = useState<number | null>(null);
+  const [cloudUploadStage, setCloudUploadStage] = useState<string | null>(null);
+  const [cloudUploadError, setCloudUploadError] = useState<string | null>(null);
+  const [downloadingTarget, setDownloadingTarget] = useState<'final' | 'original' | null>(null);
 
   const settings = project.exportSettings;
   const resolvedDims = resolveCanvasDimensions(
@@ -73,36 +93,106 @@ export function ExportCenterPage({
     project.metadata
   );
 
-  const verifyExportedFile = useCallback(async (url: string | null) => {
-    if (!url) {
-      setExportValidation('idle');
+  const verifyExportedFile = useCallback(
+    async (url: string | null) => {
+      if (!url) {
+        setExportValidation('idle');
+        setExportValidationMsg(null);
+        setResolvedExportUrl(null);
+        setVideoMetaInfo(null);
+        return;
+      }
+      setExportValidation('checking');
       setExportValidationMsg(null);
       setVideoMetaInfo(null);
-      return;
-    }
-    setExportValidation('checking');
-    setExportValidationMsg(null);
-    setVideoMetaInfo(null);
-    try {
-      const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-      const size = Number(res.headers.get('content-length') || 0);
-      if (!res.ok || size < 1024) {
+      try {
+        const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+        const size = Number(res.headers.get('content-length') || 0);
+        if (res.ok && size >= 1024) {
+          setResolvedExportUrl(`${url}?v=${encodeURIComponent(project.lastExportedAt || '1')}`);
+          setExportValidation('valid');
+          return;
+        }
+        // Cross-device fallback: resolve authenticated signed URL from Supabase Cloud Storage
+        const signedUrl = await resolvePlayableAssetUrl(url, project.cloudAssets);
+        if (signedUrl) {
+          setResolvedExportUrl(signedUrl);
+          setExportValidation('valid');
+          return;
+        }
         setExportValidation('error');
         setExportValidationMsg(
           !res.ok
-            ? `Exported video file not found on server (HTTP ${res.status}). Re-render Final MP4.`
+            ? `Exported video file not found locally (HTTP ${res.status}) and no verified cloud copy was found.`
             : 'Exported MP4 is empty or incomplete (0 bytes). Re-render Final MP4.'
         );
+      } catch (err) {
+        const signedUrl = await resolvePlayableAssetUrl(url, project.cloudAssets).catch(
+          () => null
+        );
+        if (signedUrl) {
+          setResolvedExportUrl(signedUrl);
+          setExportValidation('valid');
+          return;
+        }
+        setExportValidation('error');
+        setExportValidationMsg(
+          err instanceof Error ? err.message : 'Unable to verify exported MP4.'
+        );
+      }
+    },
+    [project.cloudAssets, project.lastExportedAt]
+  );
+
+  const uploadFinalMp4ToCloud = useCallback(
+    async (targetProject: Project) => {
+      if (!targetProject.lastExportUrl) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setCloudUploadError('Offline: Final MP4 saved locally. Connect online to upload to cloud.');
         return;
       }
-      setExportValidation('valid');
-    } catch (err) {
-      setExportValidation('error');
-      setExportValidationMsg(
-        err instanceof Error ? err.message : 'Unable to verify exported MP4.'
-      );
-    }
-  }, []);
+      if (!isSupabaseConfigured()) return;
+      const { user } = await getCloudSession();
+      if (!user) return;
+
+      const controller = new AbortController();
+      cloudUploadAbortRef.current = controller;
+      setCloudUploading(true);
+      setCloudUploadPct(0);
+      setCloudUploadStage('Preparing Final MP4 for Supabase Cloud upload...');
+      setCloudUploadError(null);
+
+      try {
+        const res = await uploadSingleProjectAssetToCloud(
+          targetProject,
+          targetProject.lastExportUrl,
+          {
+            signal: controller.signal,
+            onProgress: (pct, stage) => {
+              setCloudUploadPct(pct);
+              setCloudUploadStage(stage);
+            },
+          }
+        );
+        onProjectUpdated(res.project);
+        if (res.failedUploads.length > 0) {
+          setCloudUploadError(res.failedUploads[0].reason);
+        } else if (res.skippedLargeAssets.length > 0) {
+          setCloudUploadError(res.skippedLargeAssets[0].reason);
+        } else if (res.cancelled) {
+          setCloudUploadError('Cloud upload cancelled by user. Local MP4 preserved.');
+        } else {
+          setCloudUploadStage(res.message);
+        }
+      } catch (err) {
+        setCloudUploadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        cloudUploadAbortRef.current = null;
+        setCloudUploading(false);
+      }
+    },
+    [onProjectUpdated]
+  );
 
   useEffect(() => {
     void verifyExportedFile(project.lastExportUrl);
@@ -145,6 +235,8 @@ export function ExportCenterPage({
           onProjectUpdated(synced);
           setPreviewMode('rendered');
           void verifyExportedFile(synced.lastExportUrl);
+          // Automatically upload & verify rendered MP4 to Supabase Free Cloud if signed in
+          void uploadFinalMp4ToCloud(synced);
         }
       } catch {
         // ignore transient poll errors
@@ -152,7 +244,7 @@ export function ExportCenterPage({
     }, 900);
 
     return () => clearInterval(timer);
-  }, [activeJob, project.id, onProjectUpdated, verifyExportedFile]);
+  }, [activeJob, project.id, onProjectUpdated, verifyExportedFile, uploadFinalMp4ToCloud]);
 
   const updateSettings = async (patch: Partial<ExportSettings>) => {
     const next = { ...settings, ...patch };
@@ -222,7 +314,7 @@ export function ExportCenterPage({
             </h1>
           </div>
           <p className="text-sm text-zinc-400 mt-1">
-            Validate all pipeline modules, render the final synchronized MP4 with FFmpeg, and preview or download the finished video.
+            FFmpeg renders locally on your machine, then uploads &amp; verifies the finished MP4 to Supabase Free Cloud for multi-device download.
           </p>
         </div>
 
@@ -564,8 +656,12 @@ export function ExportCenterPage({
 
           <TimelineSyncCard project={project} onProjectUpdated={onProjectUpdated} compact />
 
-          {/* Creative TikTok Thumbnail Studio (5 Distinct Designs + Individual & ZIP Export) */}
-          <TikTokThumbnailEditor project={project} customFonts={customFonts} />
+          {/* Creative TikTok Thumbnail Studio (5 Distinct Designs + Individual, ZIP & Cloud Save) */}
+          <TikTokThumbnailEditor
+            project={project}
+            customFonts={customFonts}
+            onProjectUpdated={onProjectUpdated}
+          />
 
           {/* Functional Final Export Preview & Separate Draft Preview */}
           <div className="p-5 rounded-xl bg-[#111115] border border-white/[0.08] space-y-4">
@@ -578,8 +674,8 @@ export function ExportCenterPage({
                 </h2>
                 <p className="text-xs text-zinc-400">
                   {previewMode === 'rendered' && project.lastExportUrl
-                    ? 'Verified MP4 output encoded by FFmpeg (H.264 / AAC).'
-                    : 'Real-time workspace preview — click GENERATE FINAL VIDEO to encode the downloadable MP4.'}
+                    ? 'Verified MP4 output encoded locally by FFmpeg (H.264 / AAC) and playable across devices.'
+                    : 'Real-time workspace preview — click GENERATE FINAL VIDEO to encode locally.'}
                 </p>
               </div>
 
@@ -610,34 +706,138 @@ export function ExportCenterPage({
                   </button>
                 </div>
 
-                {project.lastExportUrl && (
-                  <a
-                    href={
-                      exportValidation === 'valid'
-                        ? `${project.lastExportUrl}?download=1`
-                        : undefined
-                    }
-                    onClick={(e) => {
-                      if (exportValidation !== 'valid') e.preventDefault();
+                {project.sourceVideoUrl && (
+                  <button
+                    type="button"
+                    disabled={downloadingTarget !== null}
+                    onClick={() => {
+                      if (!project.sourceVideoUrl) return;
+                      setDownloadingTarget('original');
+                      setErrorMsg(null);
+                      void downloadProjectAsset({
+                        localUrl: project.sourceVideoUrl,
+                        cloudAssets: project.cloudAssets,
+                        filename:
+                          project.sourceFilename ||
+                          `${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_original.mp4`,
+                      })
+                        .catch((err) =>
+                          setErrorMsg(err instanceof Error ? err.message : String(err))
+                        )
+                        .finally(() => setDownloadingTarget(null));
                     }}
-                    aria-disabled={exportValidation !== 'valid'}
-                    download={`${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_final.mp4`}
+                    className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-xs font-medium text-zinc-100 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    {downloadingTarget === 'original' ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5" />
+                    )}
+                    Download Original
+                  </button>
+                )}
+
+                {project.lastExportUrl && (
+                  <button
+                    type="button"
+                    disabled={exportValidation !== 'valid' || downloadingTarget !== null}
+                    onClick={() => {
+                      if (!project.lastExportUrl) return;
+                      setDownloadingTarget('final');
+                      setErrorMsg(null);
+                      void downloadProjectAsset({
+                        localUrl: project.lastExportUrl,
+                        cloudAssets: project.cloudAssets,
+                        filename: `${project.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_final.mp4`,
+                      })
+                        .catch((err) =>
+                          setErrorMsg(err instanceof Error ? err.message : String(err))
+                        )
+                        .finally(() => setDownloadingTarget(null));
+                    }}
                     className={`px-4 py-2 rounded-lg text-xs font-bold text-white flex items-center gap-2 whitespace-nowrap shadow-sm ${
                       exportValidation === 'valid'
                         ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30 cursor-pointer'
                         : 'bg-zinc-800 text-zinc-500 cursor-not-allowed opacity-60'
                     }`}
                   >
-                    <Download className="w-4 h-4" />
+                    {downloadingTarget === 'final' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
                     {exportValidation === 'valid'
                       ? `Download Final MP4 (${formatBytes(project.lastExportSize)})`
                       : exportValidation === 'checking'
                       ? 'Verifying MP4...'
                       : 'MP4 Unavailable'}
-                  </a>
+                  </button>
                 )}
               </div>
             </div>
+
+            {/* Post-Render Cloud Storage Verification & Upload Bar */}
+            {project.lastExportUrl && (
+              <div className="p-3 rounded-lg bg-[#09090B] border border-white/[0.08] space-y-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Cloud
+                      className={`w-4 h-4 shrink-0 ${
+                        project.cloudAssets?.[project.lastExportUrl.split('?')[0]]?.verified
+                          ? 'text-emerald-400'
+                          : 'text-amber-400'
+                      }`}
+                    />
+                    <span className="font-medium text-zinc-200">
+                      {cloudUploading
+                        ? cloudUploadStage || 'Uploading Final MP4 to Supabase Free Cloud...'
+                        : project.cloudAssets?.[project.lastExportUrl.split('?')[0]]?.verified
+                        ? `Final MP4 Cloud Verified (${formatBytes(
+                            project.cloudAssets[project.lastExportUrl.split('?')[0]]
+                              .verifiedSizeBytes || project.lastExportSize
+                          )}) · Accessible on all devices`
+                        : 'Final MP4 not yet verified in cloud storage'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {cloudUploading ? (
+                      <button
+                        type="button"
+                        onClick={() => cloudUploadAbortRef.current?.abort()}
+                        className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+                      >
+                        <XCircle className="w-3.5 h-3.5" />
+                        Cancel Upload
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void uploadFinalMp4ToCloud(project)}
+                        className="px-2.5 py-1 rounded bg-violet-600/80 hover:bg-violet-500 text-white text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+                      >
+                        {cloudUploadError ? (
+                          <RotateCcw className="w-3 h-3" />
+                        ) : (
+                          <Cloud className="w-3 h-3" />
+                        )}
+                        {cloudUploadError ? 'Retry Cloud Upload' : 'Upload Final MP4 to Cloud'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {cloudUploading && cloudUploadPct !== null && (
+                  <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                    <div
+                      className="h-full bg-violet-500 transition-all"
+                      style={{ width: `${cloudUploadPct}%` }}
+                    />
+                  </div>
+                )}
+                {cloudUploadError && (
+                  <div className="text-[11px] text-amber-300">{cloudUploadError}</div>
+                )}
+              </div>
+            )}
 
             {previewMode === 'draft' ? (
               <div className="space-y-2.5">
@@ -666,7 +866,7 @@ export function ExportCenterPage({
                 {exportValidation === 'checking' && (
                   <div className="py-12 flex flex-col items-center justify-center gap-2 rounded-xl bg-[#09090B] border border-white/[0.06] text-xs text-zinc-400">
                     <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
-                    <span>Verifying rendered MP4 stream...</span>
+                    <span>Verifying rendered MP4 stream (local or cloud)...</span>
                   </div>
                 )}
 
@@ -690,7 +890,7 @@ export function ExportCenterPage({
                   </div>
                 )}
 
-                {exportValidation === 'valid' && (
+                {exportValidation === 'valid' && resolvedExportUrl && (
                   <>
                     <div
                       className="rounded-xl overflow-hidden bg-black border border-white/[0.08] shadow-2xl mx-auto flex items-center justify-center"
@@ -702,10 +902,8 @@ export function ExportCenterPage({
                     >
                       <video
                         ref={finalVideoRef}
-                        key={`${project.lastExportUrl}_${project.lastExportedAt || ''}`}
-                        src={`${project.lastExportUrl}?v=${encodeURIComponent(
-                          project.lastExportedAt || '1'
-                        )}`}
+                        key={`${resolvedExportUrl}_${project.lastExportedAt || ''}`}
+                        src={resolvedExportUrl}
                         controls
                         playsInline
                         preload="metadata"

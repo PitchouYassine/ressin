@@ -43,6 +43,7 @@ import {
   resolveClosestSupportedWeight,
   subscribeFontStatus,
 } from '../lib/fontCatalog';
+import { resolvePlayableAssetUrl } from '../lib/supabaseCloud';
 import { buildOrderedLayerTokens } from './LayerPanel';
 
 interface VideoStudioPlayerProps {
@@ -463,6 +464,51 @@ export function VideoStudioPlayer({
       )
     : 0;
   const effectiveDuration = Math.max(srcDuration, dubTotalDuration);
+
+  const [resolvedUrls, setResolvedUrls] = useState<{
+    video: string | null;
+    dub: string | null;
+    music: string | null;
+    sfx: string | null;
+  }>({
+    video: project.sourceVideoUrl,
+    dub: project.voice.fullDubUrl || null,
+    music: project.voice.bgMusicUrl || null,
+    sfx: project.voice.sfxUrl || null,
+  });
+
+  useEffect(() => {
+    let active = true;
+    setResolvedUrls({
+      video: project.sourceVideoUrl,
+      dub: project.voice.fullDubUrl || null,
+      music: project.voice.bgMusicUrl || null,
+      sfx: project.voice.sfxUrl || null,
+    });
+    void Promise.all([
+      resolvePlayableAssetUrl(project.sourceVideoUrl, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.fullDubUrl, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.bgMusicUrl, project.cloudAssets),
+      resolvePlayableAssetUrl(project.voice.sfxUrl, project.cloudAssets),
+    ]).then(([video, dub, music, sfx]) => {
+      if (!active) return;
+      setResolvedUrls({
+        video: video || project.sourceVideoUrl,
+        dub: dub || project.voice.fullDubUrl || null,
+        music: music || project.voice.bgMusicUrl || null,
+        sfx: sfx || project.voice.sfxUrl || null,
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [
+    project.sourceVideoUrl,
+    project.voice.fullDubUrl,
+    project.voice.bgMusicUrl,
+    project.voice.sfxUrl,
+    project.cloudAssets,
+  ]);
 
   useEffect(() => {
     setNaturalSize(null);
@@ -1953,7 +1999,7 @@ export function VideoStudioPlayer({
             {canvas.backgroundType === 'blur' && canvas.bgImageVisible !== false && (
               <video
                 ref={bgVideoRef}
-                src={project.sourceVideoUrl}
+                src={resolvedUrls.video || project.sourceVideoUrl}
                 muted
                 playsInline
                 aria-hidden="true"
@@ -2006,7 +2052,7 @@ export function VideoStudioPlayer({
                 <div className="w-full h-full overflow-hidden relative">
                   <video
                     ref={videoRef}
-                    src={project.sourceVideoUrl}
+                    src={resolvedUrls.video || project.sourceVideoUrl}
                     playsInline
                     style={stageMetrics.fgVideoStyle}
                     onLoadedMetadata={(e) => {
@@ -2066,7 +2112,7 @@ export function VideoStudioPlayer({
             ) : (
               <video
                 ref={videoRef}
-                src={project.sourceVideoUrl}
+                src={resolvedUrls.video || project.sourceVideoUrl}
                 playsInline
                 style={{
                   filter: videoFilterCss,
@@ -2108,7 +2154,7 @@ export function VideoStudioPlayer({
                 >
                   {/* Dimmed full original video preview */}
                   <video
-                    src={project.sourceVideoUrl}
+                    src={resolvedUrls.video || project.sourceVideoUrl}
                     muted
                     playsInline
                     ref={(el) => {
@@ -2297,13 +2343,29 @@ export function VideoStudioPlayer({
 
             {/* Synchronized AI Dub, Background Music & Sound Effects Audio Elements */}
             {project.voice.fullDubUrl && (
-              <audio ref={dubAudioRef} src={project.voice.fullDubUrl} preload="auto" crossOrigin="anonymous" />
+              <audio
+                ref={dubAudioRef}
+                src={resolvedUrls.dub || project.voice.fullDubUrl}
+                preload="auto"
+                crossOrigin="anonymous"
+              />
             )}
             {project.voice.bgMusicUrl && (
-              <audio ref={musicAudioRef} src={project.voice.bgMusicUrl} loop preload="auto" crossOrigin="anonymous" />
+              <audio
+                ref={musicAudioRef}
+                src={resolvedUrls.music || project.voice.bgMusicUrl}
+                loop
+                preload="auto"
+                crossOrigin="anonymous"
+              />
             )}
             {project.voice.sfxUrl && (
-              <audio ref={sfxAudioRef} src={project.voice.sfxUrl} preload="auto" crossOrigin="anonymous" />
+              <audio
+                ref={sfxAudioRef}
+                src={resolvedUrls.sfx || project.voice.sfxUrl}
+                preload="auto"
+                crossOrigin="anonymous"
+              />
             )}
 
             {/* Background Blur Live Preview Simulation Overlay */}

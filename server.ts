@@ -35,7 +35,15 @@ import {
   saveSavedFishVoices,
   updatePreset,
   updateProject,
+  upsertProjectFromCloud,
 } from './server/db.ts';
+import {
+  CompressionPreset,
+  compressProjectVideoForFreeCloud,
+  computeLocalStorageUsage,
+  hydrateAssetToLocalBucket,
+  inspectProjectAssets,
+} from './server/services/cloud_helper_service.ts';
 import { isGeminiConfigured } from './server/services/gemini_client.ts';
 import {
   analyzeVideoFile,
@@ -117,7 +125,7 @@ app.use(express.raw({ type: 'application/octet-stream', limit: '30mb' }));
 
 const uploadMem = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 55 * 1024 * 1024 },
 });
 
 // Media streaming route with HTTP Range & HEAD support for video seeking and download disposition
@@ -240,6 +248,25 @@ app.get('/api/system/status', async (_req, res) => {
     supportedVideoFormats: ['MP4', 'MOV', 'MKV'],
     supportedLogoFormats: ['PNG', 'SVG'],
   });
+});
+
+// Zero-Cost Supabase Free SQL Schema & Local Storage Accounting
+app.get('/api/system/supabase-schema', (_req, res) => {
+  try {
+    const sqlPath = path.resolve('./db/supabase_free_schema.sql');
+    const sql = fs.existsSync(sqlPath) ? fs.readFileSync(sqlPath, 'utf-8') : '';
+    res.json({ sql });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get('/api/system/storage-usage', (_req, res) => {
+  try {
+    res.json(computeLocalStorageUsage());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // Fish Audio Voice Library & Authorized Cloned Voices
@@ -668,6 +695,101 @@ app.delete('/api/projects/:id', (req, res) => {
     return;
   }
   res.json({ deleted: true });
+});
+
+// Upsert Project pulled from Supabase Free PostgreSQL
+app.post('/api/projects/upsert-from-cloud', (req, res) => {
+  try {
+    const projectData = req.body?.project as Project | undefined;
+    if (!projectData || !projectData.id) {
+      res.status(400).json({ error: 'Invalid cloud project payload.' });
+      return;
+    }
+    const saved = upsertProjectFromCloud(projectData);
+    res.json({ project: saved });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Inspect Project Assets (SHA-256 + Size + Free 50 MB single-file cap check)
+app.get('/api/projects/:id/asset-manifest', (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    res.json(inspectProjectAssets(project));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// User-Requested Local FFmpeg Compression (ONLY when user clicks compress; preserves original file)
+app.post('/api/projects/:id/compress-video', async (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const rawPreset = String(req.body?.preset || 'under-45mb');
+    const preset: CompressionPreset =
+      rawPreset === '720p-compact' || rawPreset === '480p-compact'
+        ? rawPreset
+        : 'under-45mb';
+    const target = req.body?.target === 'final-export' ? 'final-export' : 'source';
+
+    const result = await compressProjectVideoForFreeCloud({ project, preset, target });
+    const updated =
+      target === 'final-export'
+        ? updateProject(project.id, {
+            lastExportUrl: result.compressedUrl,
+            lastExportSize: result.compressedBytes,
+            lastExportedAt: new Date().toISOString(),
+          })
+        : updateProject(project.id, {
+            sourceVideoUrl: result.compressedUrl,
+            sourceFilename: result.filename,
+            metadata: result.metadata,
+          });
+    res.json({
+      project: updated,
+      ...result,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Hydrate downloaded Supabase Storage asset into local bucket for FFmpeg & Studio preview on Device B
+app.post('/api/projects/:id/hydrate-asset', uploadMem.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No asset file payload uploaded.' });
+      return;
+    }
+    const bucket = String(req.body?.bucket || 'uploads');
+    const filename = String(req.body?.filename || req.file.originalname || 'asset.bin');
+    const assetKind = String(req.body?.assetKind || 'video') as import('./src/types/studio.ts').CloudAssetKind;
+    const targetLocalUrl =
+      typeof req.body?.targetLocalUrl === 'string' ? req.body.targetLocalUrl : undefined;
+    const mimeType = String(req.body?.mimeType || req.file.mimetype || 'application/octet-stream');
+
+    const saved = hydrateAssetToLocalBucket({
+      projectId: req.params.id,
+      targetLocalUrl,
+      bucket,
+      filename,
+      assetKind,
+      mimeType,
+      buffer: req.file.buffer,
+    });
+    res.json(saved);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // Generate a real FFmpeg-synthesized sample movie recap video for immediate pipeline testing
@@ -1626,6 +1748,55 @@ app.post('/api/projects/:id/thumbnails/generate', async (req, res) => {
       suggestedTitles,
       translationMissingWarning: translatedLines.length === 0,
     });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Save a rendered composite thumbnail (TikTok PNG/JPG) onto project storage so it syncs across devices
+app.post('/api/projects/:id/thumbnails/save', uploadMem.single('file'), (req, res) => {
+  try {
+    const project = getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: 'Thumbnail image file is required.' });
+      return;
+    }
+    const format = req.body?.format === 'jpg' ? 'jpg' : 'png';
+    const label = String(req.body?.label || 'TikTok Thumbnail').slice(0, 80);
+    const width = Number(req.body?.width) || 1080;
+    const height = Number(req.body?.height) || 1920;
+    const thumbId = uuidv4();
+    const safeFilename = `tiktok_thumb_${project.id.slice(0, 8)}_${thumbId.slice(0, 8)}.${format}`;
+    const thumbUrl = `/media/thumbs/${safeFilename}`;
+    const saved = hydrateAssetToLocalBucket({
+      projectId: project.id,
+      targetLocalUrl: thumbUrl,
+      bucket: 'thumbs',
+      filename: safeFilename,
+      assetKind: 'thumbnail',
+      mimeType: format === 'jpg' ? 'image/jpeg' : 'image/png',
+      buffer: req.file.buffer,
+    });
+
+    const newThumb = {
+      id: thumbId,
+      url: saved.localUrl,
+      label,
+      width,
+      height,
+      format: format as 'png' | 'jpg',
+      createdAt: new Date().toISOString(),
+    };
+    const nextSaved = [newThumb, ...(project.savedThumbnails || [])].slice(0, 20);
+    const updated = updateProject(project.id, {
+      savedThumbnails: nextSaved,
+      thumbnailUrl: req.body?.setAsCover === 'true' ? saved.localUrl : project.thumbnailUrl,
+    });
+    res.json({ thumbnail: newThumb, project: updated });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

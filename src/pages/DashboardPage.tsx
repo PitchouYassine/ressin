@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
+  Archive,
   CheckCircle2,
   Clock,
+  Cloud,
+  CloudOff,
   Film,
   FolderOpen,
   Layers,
@@ -17,6 +20,8 @@ import {
 import { NavPage, Project, RenderJob, StudioPreset } from '../types/studio';
 import { api, PresetWarning, uploadVideoChunked } from '../lib/api';
 import { formatBytes, formatDurationShort } from '../lib/formatters';
+import { indexedDbStore } from '../lib/indexedDbStore';
+import { importProjectBackupZip } from '../lib/projectBackup';
 import { createWorkflowUpdate } from '../lib/workflowStages';
 
 interface DashboardPageProps {
@@ -26,6 +31,8 @@ interface DashboardPageProps {
   onSelectProject: (project: Project, navigateTo?: NavPage) => void;
   onRefreshProjects: () => Promise<void>;
   onPresetWarnings?: (warnings: PresetWarning[]) => void;
+  onOpenCloudModal?: () => void;
+  pendingSyncProjectIds?: Set<string>;
 }
 
 export function DashboardPage({
@@ -35,8 +42,11 @@ export function DashboardPage({
   onSelectProject,
   onRefreshProjects,
   onPresetWarnings,
+  onOpenCloudModal,
+  pendingSyncProjectIds,
 }: DashboardPageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupImportRef = useRef<HTMLInputElement>(null);
   const [newName, setNewName] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
@@ -228,6 +238,7 @@ export function DashboardPage({
     setErrorMsg(null);
     try {
       await api.deleteProject(id);
+      await indexedDbStore.deleteProjectSnapshot(id);
       await onRefreshProjects();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -247,23 +258,63 @@ export function DashboardPage({
           </p>
         </div>
 
-        <form onSubmit={handleCreateEmptyProject} className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <input
-            type="text"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="New project name..."
-            className="bg-[#111115] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-violet-500 w-52"
+            ref={backupImportRef}
+            type="file"
+            accept=".zip,.recapbackup.zip"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setErrorMsg(null);
+              setUploadPct(5);
+              setUploadStage('Restoring backup archive...');
+              void importProjectBackupZip(f, (pct, label) => {
+                setUploadPct(pct);
+                setUploadStage(label);
+              })
+                .then(async (restored) => {
+                  await onRefreshProjects();
+                  onSelectProject(restored, 'editor');
+                })
+                .catch((err) => {
+                  setErrorMsg(err instanceof Error ? err.message : String(err));
+                })
+                .finally(() => {
+                  setUploadPct(null);
+                  setUploadStage('');
+                });
+              e.target.value = '';
+            }}
           />
           <button
-            type="submit"
-            disabled={!newName.trim()}
-            className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-xs font-medium text-zinc-100 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            type="button"
+            onClick={() => backupImportRef.current?.click()}
+            className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.1] text-xs font-medium text-zinc-200 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" />
-            New Blank
+            <Archive className="w-3.5 h-3.5 text-zinc-400" />
+            Import Backup
           </button>
-        </form>
+
+          <form onSubmit={handleCreateEmptyProject} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="New project name..."
+              className="bg-[#111115] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-violet-500 w-48"
+            />
+            <button
+              type="submit"
+              disabled={!newName.trim()}
+              className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-xs font-medium text-zinc-100 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              New Blank
+            </button>
+          </form>
+        </div>
       </div>
 
       {errorMsg && (
@@ -543,9 +594,52 @@ export function DashboardPage({
                     </div>
 
                     <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between text-xs">
-                      <span className="text-zinc-500">
-                        {new Date(p.updatedAt).toLocaleDateString()}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenCloudModal?.();
+                        }}
+                        className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                        title="Cloud synchronization status"
+                      >
+                        {pendingSyncProjectIds?.has(p.id) ||
+                        p.cloudSync?.syncStatus === 'pending-sync' ||
+                        p.cloudSync?.syncStatus === 'offline' ? (
+                          <>
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            <span className="text-amber-300">
+                              {p.cloudSync?.unverifiedCount
+                                ? `Pending Upload (${p.cloudSync.unverifiedCount} unverified)`
+                                : 'Unsynced Local Queue'}
+                            </span>
+                          </>
+                        ) : p.cloudSync?.syncStatus === 'quota-blocked' ? (
+                          <>
+                            <AlertTriangle className="w-3 h-3 text-red-400" />
+                            <span className="text-red-300">Quota Full · Local Only</span>
+                          </>
+                        ) : p.cloudSync?.syncStatus === 'conflict' ? (
+                          <>
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span className="text-amber-300">Sync Conflict</span>
+                          </>
+                        ) : p.cloudSync?.syncStatus === 'cloud-synced' ? (
+                          <>
+                            <Cloud className="w-3 h-3 text-emerald-400" />
+                            <span className="text-emerald-300">
+                              {p.cloudSync.skippedLargeAssets?.length
+                                ? 'Cloud Synced · >50 MB Local'
+                                : 'Full Cloud Verified'}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <CloudOff className="w-3 h-3 text-zinc-500" />
+                            <span className="text-zinc-500">Local Only</span>
+                          </>
+                        )}
+                      </button>
                       <span className="text-violet-400 font-medium flex items-center gap-1 group-hover:text-violet-300">
                         <FolderOpen className="w-3.5 h-3.5" />
                         Open Studio

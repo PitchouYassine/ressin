@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Cloud,
+  CloudOff,
   Download,
   Loader2,
   Menu,
   Redo2,
   Undo2,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -14,6 +17,7 @@ import {
   DEFAULT_VIDEO_CANVAS,
   LogoOverlay,
   NavPage,
+  PendingSyncOp,
   Project,
   RenderJob,
   SavedFontAsset,
@@ -24,6 +28,15 @@ import {
   WorkflowStageId,
 } from './types/studio';
 import { api, PresetWarning } from './lib/api';
+import { indexedDbStore } from './lib/indexedDbStore';
+import {
+  getCloudSession,
+  getSupabaseClient,
+  hydrateProjectAssetsFromCloud,
+  queueDebouncedMetadataSync,
+  subscribeToCloudProjectsRealtime,
+} from './lib/supabaseCloud';
+import { CloudSyncModal } from './components/CloudSyncModal';
 import {
   WORKFLOW_STAGES,
   computeStageStatuses,
@@ -109,6 +122,15 @@ export default function App() {
   const [undoStack, setUndoStack] = useState<EditableSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<EditableSnapshot[]>([]);
 
+  // Zero-Cost Supabase Free Cloud & Offline IndexedDB State
+  const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [cloudUserId, setCloudUserId] = useState<string | null>(null);
+  const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [pendingOps, setPendingOps] = useState<PendingSyncOp[]>([]);
+
   const reloadCustomFonts = useCallback(async () => {
     try {
       const res = await api.listCustomFonts();
@@ -119,6 +141,18 @@ export default function App() {
       // ignore transient font list errors
     }
   }, []);
+
+  const refreshPendingOps = useCallback(async () => {
+    const ops = await indexedDbStore.listPendingSyncOps();
+    setPendingOps(ops);
+  }, []);
+
+  const refreshCloudAuth = useCallback(async () => {
+    const { user } = await getCloudSession();
+    setCloudUserId(user?.id || null);
+    setCloudUserEmail(user?.email || null);
+    await refreshPendingOps();
+  }, [refreshPendingOps]);
 
   const loadWorkspaceData = useCallback(async () => {
     try {
@@ -132,6 +166,7 @@ export default function App() {
         : [];
       const validJobs = Array.isArray(jobRes?.jobs) ? jobRes.jobs : [];
       setProjects(validProjects);
+      void indexedDbStore.saveAllProjectSnapshots(validProjects);
       setRecentJobs(validJobs);
       if (Array.isArray(fontRes?.fonts)) {
         setCustomFonts(fontRes.fonts);
@@ -141,7 +176,12 @@ export default function App() {
         return validProjects[0]?.id || null;
       });
     } catch {
-      // keep existing state on transient fetch error
+      // Offline / backend unreachable fallback: read local IndexedDB snapshots
+      const cached = await indexedDbStore.listProjectSnapshots();
+      if (cached.length > 0) {
+        setProjects(cached);
+        setActiveProjectId((prev) => prev || cached[0]?.id || null);
+      }
     } finally {
       setLoading(false);
     }
@@ -149,7 +189,58 @@ export default function App() {
 
   useEffect(() => {
     void loadWorkspaceData();
-  }, [loadWorkspaceData]);
+    void refreshCloudAuth();
+  }, [loadWorkspaceData, refreshCloudAuth]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      setIsOnline(true);
+      void refreshPendingOps();
+    };
+    const onOffline = () => {
+      setIsOnline(false);
+    };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+
+    const client = getSupabaseClient();
+    const authSub = client?.auth.onAuthStateChange((_evt, session) => {
+      setCloudUserId(session?.user?.id || null);
+      setCloudUserEmail(session?.user?.email || null);
+    });
+
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      authSub?.data.subscription.unsubscribe();
+    };
+  }, [refreshPendingOps]);
+
+  // Real-time multi-device listener via Supabase Free Realtime (ignoring self-echoes)
+  useEffect(() => {
+    if (!cloudUserId) return;
+    const unsubscribe = subscribeToCloudProjectsRealtime(cloudUserId, async (evt) => {
+      if (evt.eventType === 'DELETE') {
+        setProjects((prev) => prev.filter((p) => p.id !== evt.projectId));
+        return;
+      }
+      if (!evt.project) return;
+      try {
+        const { project: savedLocal } = await api.upsertProjectFromCloud(evt.project);
+        await indexedDbStore.saveProjectSnapshot(savedLocal);
+        setProjects((prev) => {
+          const exists = prev.some((p) => p.id === savedLocal.id);
+          return exists
+            ? prev.map((p) => (p.id === savedLocal.id ? savedLocal : p))
+            : [savedLocal, ...prev];
+        });
+        void hydrateProjectAssetsFromCloud(savedLocal);
+      } catch {
+        // ignore transient realtime sync hydration issues
+      }
+    });
+    return unsubscribe;
+  }, [cloudUserId]);
 
   // Reset Undo/Redo history when switching active project
   useEffect(() => {
@@ -209,8 +300,14 @@ export default function App() {
           ? safePrev.map((p) => (p.id === updated.id ? updated : p))
           : [updated, ...safePrev];
       });
+      queueDebouncedMetadataSync(updated, (syncedProject) => {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === syncedProject.id ? syncedProject : p))
+        );
+        void refreshPendingOps();
+      });
     },
-    [activeProjectId]
+    [activeProjectId, refreshPendingOps]
   );
 
   const applySnapshot = useCallback(
@@ -872,6 +969,45 @@ export default function App() {
               </div>
             )}
 
+            <button
+              type="button"
+              onClick={() => setCloudModalOpen(true)}
+              className="px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.1] text-xs font-medium text-zinc-200 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              title="Supabase Free Cloud Sync & Storage Optimizer"
+            >
+              {!isOnline ? (
+                <>
+                  <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Offline ({pendingOps.length})</span>
+                </>
+              ) : activeProject?.cloudSync?.syncStatus === 'quota-blocked' ? (
+                <>
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                  <span>Quota Full</span>
+                </>
+              ) : pendingOps.length > 0 ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Pending ({pendingOps.length})</span>
+                </>
+              ) : cloudUserId && activeProject?.cloudSync?.syncStatus === 'cloud-synced' ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Cloud Synced</span>
+                </>
+              ) : cloudUserId ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-violet-400" />
+                  <span>Cloud Sync</span>
+                </>
+              ) : (
+                <>
+                  <CloudOff className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>Local Only</span>
+                </>
+              )}
+            </button>
+
             {activeProject && activePage !== 'export' && (
               <button
                 onClick={() => void navigateToStage('export')}
@@ -942,9 +1078,14 @@ export default function App() {
               onSelectProject={handleSelectProject}
               onRefreshProjects={loadWorkspaceData}
               onPresetWarnings={setPresetWarnings}
+              onOpenCloudModal={() => setCloudModalOpen(true)}
+              pendingSyncProjectIds={new Set(pendingOps.map((p) => p.projectId))}
             />
           ) : activePage === 'settings' ? (
-            <SettingsPage />
+            <SettingsPage
+              onOpenCloudModal={() => setCloudModalOpen(true)}
+              cloudUserEmail={cloudUserEmail}
+            />
           ) : !activeProject ? (
             <div className="p-10 text-center space-y-3">
               <div className="text-sm font-medium text-zinc-200">No Active Project Selected</div>
@@ -1076,6 +1217,20 @@ export default function App() {
           ) : null}
         </main>
       </div>
+
+      <CloudSyncModal
+        open={cloudModalOpen}
+        onClose={() => setCloudModalOpen(false)}
+        activeProject={activeProject}
+        projects={projects}
+        cloudUserId={cloudUserId}
+        cloudUserEmail={cloudUserEmail}
+        isOnline={isOnline}
+        pendingOps={pendingOps}
+        onProjectUpdated={handleProjectUpdated}
+        onRefreshProjects={loadWorkspaceData}
+        onAuthChanged={refreshCloudAuth}
+      />
     </div>
   );
 }

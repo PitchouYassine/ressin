@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Cloud,
   FolderCog,
   Loader2,
   ShieldAlert,
@@ -9,8 +10,14 @@ import {
 } from 'lucide-react';
 import { SystemStatus } from '../types/studio';
 import { api } from '../lib/api';
+import { ZERO_COST_CAPABILITY_MATRIX } from '../lib/supabaseFreeLimits';
 
-export function SettingsPage() {
+interface SettingsPageProps {
+  onOpenCloudModal?: () => void;
+  cloudUserEmail?: string | null;
+}
+
+export function SettingsPage({ onOpenCloudModal, cloudUserEmail }: SettingsPageProps) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [cleaning, setCleaning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
@@ -83,22 +90,22 @@ export function SettingsPage() {
             <div className="py-3 flex items-center justify-between gap-4">
               <div>
                 <div className="font-medium text-zinc-100">
-                  Google Gemini AI (Translation & Alignment)
+                  Gemini Translation Workflow (Manual Mode Free · Optional API)
                 </div>
                 <div className="text-zinc-500 mt-0.5">
-                  Powered server-side via @google/genai (gemini-4-hydrogen)
+                  Manual External Gemini JSON workflow requires zero API key. Optional backend API available if GEMINI_API_KEY is set.
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0 font-medium">
                 {status.geminiConfigured ? (
                   <>
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="text-emerald-300">Configured</span>
+                    <span className="text-emerald-300">API Key + Manual Ready</span>
                   </>
                 ) : (
                   <>
-                    <AlertCircle className="w-4 h-4 text-amber-400" />
-                    <span className="text-amber-300">Missing GEMINI_API_KEY</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span className="text-emerald-300">Manual Free Mode Ready (No Key Needed)</span>
                   </>
                 )}
               </div>
@@ -197,6 +204,61 @@ export function SettingsPage() {
         </div>
 
         {cleanupMsg && <div className="text-xs text-emerald-400">{cleanupMsg}</div>}
+      </section>
+
+      {/* Zero-Cost Supabase Free Cloud Sync & Free-Tier Breakdown */}
+      <section className="p-5 rounded-xl bg-[#111115] border border-white/[0.08] space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-display font-semibold text-white">
+              Zero-Cost Multi-Device Sync (Supabase Free Plan)
+            </h2>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              {cloudUserEmail
+                ? `Connected as ${cloudUserEmail} · 1 GB Free Storage · 500 MB Free PostgreSQL`
+                : 'Connect your own free Supabase project (no credit card required) or edit offline in IndexedDB.'}
+            </p>
+          </div>
+          {onOpenCloudModal && (
+            <button
+              type="button"
+              onClick={onOpenCloudModal}
+              className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              Manage Cloud Sync &amp; Quota
+            </button>
+          )}
+        </div>
+
+        <div className="rounded-lg bg-[#09090B] border border-white/[0.08] overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-white/[0.08] text-zinc-500">
+              <tr>
+                <th className="py-2 px-3 font-medium">Capability</th>
+                <th className="py-2 px-3 font-medium">Cost Tier</th>
+                <th className="py-2 px-3 font-medium">Known Limit / Note</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.06]">
+              {ZERO_COST_CAPABILITY_MATRIX.map((row) => (
+                <tr key={row.feature}>
+                  <td className="py-2 px-3 text-zinc-200">{row.feature}</td>
+                  <td className="py-2 px-3 whitespace-nowrap">
+                    {row.tier === 'free-local' ? (
+                      <span className="text-emerald-300">Free (Local)</span>
+                    ) : row.tier === 'free-cloud' ? (
+                      <span className="text-violet-300">Free (Supabase)</span>
+                    ) : (
+                      <span className="text-amber-300">Optional Paid Key</span>
+                    )}
+                  </td>
+                  <td className="py-2 px-3 text-zinc-400">{row.limitation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {/* Copyright & Authorized Editing Policy */}

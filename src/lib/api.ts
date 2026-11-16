@@ -1,5 +1,6 @@
 import {
   CaptionSegment,
+  CloudAssetKind,
   FishVoiceModel,
   GeminiVoiceName,
   PresetCategory,
@@ -12,8 +13,22 @@ import {
   SupportedLanguage,
   SyncMode,
   SystemStatus,
+  VideoMetadata,
 } from '../types/studio';
 import type { FontCatalogItem } from './fontCatalog';
+
+export interface LocalAssetManifestItem {
+  localUrl: string;
+  bucket: string;
+  filename: string;
+  assetKind: CloudAssetKind;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  exists: boolean;
+  exceedsFree50MbCap: boolean;
+  necessaryForCloudSync: boolean;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -51,7 +66,112 @@ export interface PresetWarning {
 export const api = {
   getSystemStatus: () => request<SystemStatus>('/api/system/status'),
 
+  getSupabaseSchema: () => request<{ sql: string }>('/api/system/supabase-schema'),
+
+  getLocalStorageUsage: () =>
+    request<{
+      totalBytes: number;
+      buckets: Record<string, { bytes: number; files: number }>;
+    }>('/api/system/storage-usage'),
+
   runCleanup: () => request<{ removedFiles: number }>('/api/system/cleanup', { method: 'POST' }),
+
+  getProjectAssetManifest: (projectId: string) =>
+    request<{
+      assets: LocalAssetManifestItem[];
+      totalBytes: number;
+      necessaryBytes: number;
+      oversizedCount: number;
+    }>(`/api/projects/${projectId}/asset-manifest`),
+
+  compressProjectVideo: (
+    projectId: string,
+    preset: 'under-45mb' | '720p-compact' | '480p-compact',
+    target: 'source' | 'final-export' = 'source'
+  ) =>
+    request<{
+      project: Project;
+      compressedUrl: string;
+      filename: string;
+      originalSourceUrl: string;
+      originalBytes: number;
+      compressedBytes: number;
+      metadata: VideoMetadata;
+      target: 'source' | 'final-export';
+    }>(`/api/projects/${projectId}/compress-video`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset, target }),
+    }),
+
+  saveProjectThumbnail: async (
+    projectId: string,
+    params: {
+      blob: Blob;
+      label: string;
+      width: number;
+      height: number;
+      format: 'png' | 'jpg';
+      setAsCover?: boolean;
+    }
+  ) => {
+    const fd = new FormData();
+    fd.append('file', params.blob, `thumb.${params.format}`);
+    fd.append('label', params.label);
+    fd.append('width', String(params.width));
+    fd.append('height', String(params.height));
+    fd.append('format', params.format);
+    fd.append('setAsCover', params.setAsCover ? 'true' : 'false');
+    return request<{
+      thumbnail: {
+        id: string;
+        url: string;
+        label: string;
+        width: number;
+        height: number;
+        format: 'png' | 'jpg';
+        createdAt: string;
+      };
+      project: Project;
+    }>(`/api/projects/${projectId}/thumbnails/save`, {
+      method: 'POST',
+      body: fd,
+    });
+  },
+
+  upsertProjectFromCloud: (project: Project) =>
+    request<{ project: Project }>('/api/projects/upsert-from-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project }),
+    }),
+
+  hydrateAssetFromBlob: async (
+    projectId: string,
+    params: {
+      blob: Blob;
+      bucket: string;
+      filename: string;
+      assetKind: CloudAssetKind;
+      mimeType: string;
+      targetLocalUrl?: string;
+    }
+  ) => {
+    const fd = new FormData();
+    fd.append('file', params.blob, params.filename);
+    fd.append('bucket', params.bucket);
+    fd.append('filename', params.filename);
+    fd.append('assetKind', params.assetKind);
+    fd.append('mimeType', params.mimeType);
+    if (params.targetLocalUrl) fd.append('targetLocalUrl', params.targetLocalUrl);
+    return request<{ localUrl: string; filePath: string; sizeBytes: number }>(
+      `/api/projects/${projectId}/hydrate-asset`,
+      {
+        method: 'POST',
+        body: fd,
+      }
+    );
+  },
 
   listFishVoices: (params?: { query?: string; selfOnly?: boolean; language?: string }) => {
     const qs = new URLSearchParams();
